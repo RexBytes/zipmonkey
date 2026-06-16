@@ -18,6 +18,8 @@ See ``LIMITATIONS.md`` for deliberate design tradeoffs.
 
 from __future__ import annotations
 
+from importlib.metadata import PackageNotFoundError, version as _pkg_version
+
 from .archive import Archive, UnsupportedArchiveError, open
 from .artifacts import is_os_artifact
 from .detect import category_for, detect_type, is_archive_type
@@ -27,7 +29,11 @@ from .models import ArchiveEntry, ExtractResult, InspectReport, TypedFile
 from .safety import ArchiveLimitError
 from .walk import walk_typed
 
-__version__ = "0.1.0"
+try:
+    # Single source of truth is pyproject.toml; read it from installed metadata.
+    __version__ = _pkg_version("zipmonkey")
+except PackageNotFoundError:  # running from a source tree without an install
+    __version__ = "0.0.0+unknown"
 
 __all__ = [
     "Archive",

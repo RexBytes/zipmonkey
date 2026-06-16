@@ -52,6 +52,12 @@ describes only the current library.
 - **Rationale:** `py7zr` exposes only whole-member decompression (`read()` returns a `BytesIO`); there is no public chunked/callback API to stream against. The preflight rejects oversized members before they are decompressed, closing the declared-bomb hole; the residual cost is in-memory size for an *honestly-declared* large member, which only affects callers who opt into 7z. Core stdlib formats are unaffected.
 - **Escape hatch:** For untrusted/large 7z, set a small `max_total_bytes`, pass `detect_types=False` to `inspect`, or extract members individually with your own preflight via `Archive.entries()` + `Archive.open_member`.
 
+### Extraction is not TOCTOU-race-proof against a hostile concurrent writer
+- **Concern:** `safe_target` resolves symlinks in the existing `dest` prefix before writing, but another process mutating the `dest` tree *during* extraction could in principle defeat the check (a time-of-check/time-of-use race).
+- **Decision:** Validate lexically + via `realpath` at write time; do not use directory-fd / `O_NOFOLLOW` atomic operations.
+- **Rationale:** The threat model is untrusted *archives*, not an untrusted *filesystem being mutated mid-extraction by another local process*. Closing the race fully requires `openat`/`O_NOFOLLOW` plumbing that the stdlib path APIs don't expose portably, for a scenario that does not arise when `dest` is a private directory (the recommended usage). Single-writer extraction into a directory you control is safe.
+- **Escape hatch:** Extract into a freshly-created private directory (e.g. `tempfile.mkdtemp`) that no other process can write to, then move results into place.
+
 ### ZIP AES encryption is unsupported
 - **Concern:** A password-protected ZIP using WinZip AES fails to read even with the correct password.
 - **Decision:** Support only what stdlib `zipfile` supports (legacy ZipCrypto).

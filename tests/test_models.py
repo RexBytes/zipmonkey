@@ -7,6 +7,13 @@ from pathlib import Path
 from zipmonkey.models import ArchiveEntry, ExtractResult, InspectReport
 
 
+def test_version_is_resolved_string():
+    import zipmonkey
+
+    assert isinstance(zipmonkey.__version__, str)
+    assert zipmonkey.__version__  # non-empty; from package metadata when installed
+
+
 def _entry(name="f", size=100, csize=25, is_dir=False, artifact=False, dtype=None):
     return ArchiveEntry(
         name=name,
