@@ -49,6 +49,7 @@ class _StubNonStreaming:
 
     def __init__(self):
         self.opened = False
+        self.peeked = False
 
     def entries(self):
         return [
@@ -64,7 +65,8 @@ class _StubNonStreaming:
     def read(self, name):  # pragma: no cover - not reached
         return b"x" * 10
 
-    def peek(self, name, n):  # pragma: no cover - not reached
+    def peek(self, name, n):
+        self.peeked = True  # for 7z this would materialise the whole member
         return b"x" * n
 
     def open_stream(self, name):
@@ -86,6 +88,60 @@ def test_non_streaming_preflight_rejects_before_materialising(tmp_path):
             arc.extract(tmp_path / "out", max_total_bytes=1000)
         assert stub.opened is False  # rejected before decompression
     assert not (tmp_path / "out" / "big.bin").exists()
+
+
+def test_max_member_bytes_rejects_before_materialising(tmp_path):
+    # The per-member cap must reject a big non-streaming member before its
+    # open_stream (which would decompress into memory) is ever called.
+    z = tmp_path / "tiny.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("placeholder.txt", b"x")
+    with zipmonkey.open(z) as arc:
+        stub = _StubNonStreaming()  # declares a 10 MB member
+        arc._backend = stub
+        with pytest.raises(zipmonkey.ArchiveLimitError):
+            arc.extract(tmp_path / "out", max_member_bytes=1024)
+        assert stub.opened is False
+
+
+def test_non_streaming_recursive_cap_rejects_before_peek(tmp_path):
+    # Under recursion the archive-sniff peek() materialises a non-streaming
+    # member; the per-member cap must reject an oversized member BEFORE peek.
+    z = tmp_path / "tiny.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("placeholder.txt", b"x")
+    with zipmonkey.open(z) as arc:
+        stub = _StubNonStreaming()  # declares a 10 MB member
+        arc._backend = stub
+        with pytest.raises(zipmonkey.ArchiveLimitError):
+            arc.extract(tmp_path / "out", recursive=True, max_member_bytes=1024)
+        assert stub.peeked is False  # rejected before the materialising peek
+        assert stub.opened is False
+
+
+def test_rar_special_detection_logic():
+    # _rar_special is a pure attribute probe; exercise it without rarfile.
+    from zipmonkey.archive import _RarBackend
+
+    class Redir:  # RAR5-style symlink/redirect record
+        file_redir = ("SYMLINK", 0, "target")
+
+    class SymMethod:  # older rarfile exposes is_symlink()
+        file_redir = None
+
+        def is_symlink(self):
+            return True
+
+    class Plain:
+        file_redir = None
+
+        def is_symlink(self):
+            return False
+
+    assert _RarBackend._rar_special(Redir()) is True
+    assert _RarBackend._rar_special(SymMethod()) is True
+    assert _RarBackend._rar_special(Plain()) is False
+    assert _RarBackend._rar_special(object()) is False  # no metadata at all
 
 
 def test_sevenzip_roundtrip(tmp_path):

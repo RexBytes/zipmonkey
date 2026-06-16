@@ -408,6 +408,27 @@ def test_byte_limit_enforced_mid_stream(tmp_path):
     assert not (tmp_path / "out" / "big.bin").exists()
 
 
+def test_max_member_bytes_rejects_oversized(tmp_path):
+    z = tmp_path / "big.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("small.txt", b"x" * 10)
+        zf.writestr("big.txt", b"y" * 100)
+    out = tmp_path / "out"
+    with pytest.raises(zipmonkey.ArchiveLimitError) as exc:
+        zipmonkey.extract(z, out, max_member_bytes=50)
+    # The oversized member is rejected before writing.
+    assert not (out / "big.txt").exists()
+    assert exc.value.partial_result is not None
+
+
+def test_max_member_bytes_zero_disables(tmp_path):
+    z = tmp_path / "ok.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("big.txt", b"y" * 100)
+    res = zipmonkey.extract(z, tmp_path / "out", max_member_bytes=0)
+    assert res.count == 1
+
+
 def test_file_count_limit_enforced(tmp_path):
     z = tmp_path / "many.zip"
     with zipfile.ZipFile(z, "w") as zf:
@@ -594,6 +615,44 @@ def test_corrupt_gzip_raises_unsupported(tmp_path):
     bad.write_bytes(b"\x1f\x8b\x08\x00" + b"\x00" * 8 + b"not valid deflate")
     with pytest.raises(zipmonkey.UnsupportedArchiveError):
         zipmonkey.open(bad)
+
+
+def _corrupt_crc_zip(tmp_path) -> Path:
+    """A zip whose headers are intact but a member's payload is corrupt."""
+    z = tmp_path / "crc.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("a.txt", b"X" * 200)
+    data = bytearray(z.read_bytes())
+    for i in range(40, 120):  # flip stored-payload bytes -> bad CRC at read
+        data[i] ^= 0xFF
+    z.write_bytes(bytes(data))
+    return z
+
+
+def test_corrupt_crc_member_read_raises_archive_read_error(tmp_path):
+    z = _corrupt_crc_zip(tmp_path)
+    with zipmonkey.open(z) as arc:
+        # BadZipFile (Exception, not RuntimeError) must be normalised.
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.read("a.txt")
+
+
+def test_corrupt_crc_member_extract_raises_and_leaves_no_partial(tmp_path):
+    z = _corrupt_crc_zip(tmp_path)
+    out = tmp_path / "out"
+    with pytest.raises(zipmonkey.ArchiveReadError):
+        zipmonkey.extract(z, out)
+    # The half-written corrupt file must not be left behind.
+    assert not (out / "a.txt").exists()
+
+
+def test_corrupt_crc_member_cli_returns_1(tmp_path, capsys):
+    from zipmonkey.cli import main
+
+    z = _corrupt_crc_zip(tmp_path)
+    rc = main(["extract", str(z), str(tmp_path / "o")])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
 
 
 def test_corrupt_zip_raises_unsupported(tmp_path):
@@ -789,6 +848,74 @@ def test_password_wrong_extract_raises_read_error(tmp_path):
     enc = _make_encrypted_zip(tmp_path)
     with pytest.raises(zipmonkey.ArchiveReadError):
         zipmonkey.extract(enc, tmp_path / "out", password=b"WRONG")
+
+
+def test_recursive_peek_on_encrypted_member_normalised(tmp_path):
+    # recursive=True peeks every member to sniff nested archives; an encrypted
+    # member must surface ArchiveReadError, not a raw zipfile RuntimeError.
+    enc = _make_encrypted_zip(tmp_path)  # secret.zip with encrypted s.txt
+    with pytest.raises(zipmonkey.ArchiveReadError):
+        zipmonkey.extract(enc, tmp_path / "out", recursive=True)  # no password
+
+
+def test_recursive_peek_encrypted_cli_returns_1(tmp_path, capsys):
+    from zipmonkey.cli import main
+
+    enc = _make_encrypted_zip(tmp_path)
+    rc = main(["extract", str(enc), str(tmp_path / "o"), "--recursive"])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_collision_member_does_not_consume_file_budget(tmp_path):
+    # [a,b,c,foo,foo/bar] with max_files=4: foo/bar is a collision (foo is a
+    # file), so it must not count toward max_files -> extraction succeeds.
+    z = tmp_path / "clash.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for n in ("a.txt", "b.txt", "c.txt", "foo"):
+            zf.writestr(n, b"x")
+        zf.writestr("foo/bar", b"collides")
+    res = zipmonkey.extract(z, tmp_path / "out", max_files=4)  # must NOT raise
+    assert res.count == 4
+    assert len(res.skipped_collisions) == 1
+
+
+def test_duplicate_normalised_path_is_collision_not_overwrite(tmp_path):
+    z = tmp_path / "dup.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.txt", b"FIRST")
+        zf.writestr("./a.txt", b"SECOND")  # normalises to the same target
+    out = tmp_path / "out"
+    res = zipmonkey.extract(z, out)
+    assert res.count == 1  # not double-counted
+    assert len(res.skipped_collisions) == 1
+    assert (out / "a.txt").read_bytes() == b"FIRST"  # first wins, not silent clobber
+
+
+def test_nested_container_recorded_even_when_inner_limit_aborts(tmp_path):
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w") as zf:
+        for i in range(5):
+            zf.writestr(f"f{i}.txt", b"x")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(inner, "inner.zip")
+    # Container written (count=1), then inner extraction trips max_files=3.
+    with pytest.raises(zipmonkey.ArchiveLimitError) as exc:
+        zipmonkey.extract(outer, tmp_path / "out", recursive=True, max_files=3)
+    pr = exc.value.partial_result
+    # The container is on disk, so it must be recorded, not orphaned.
+    assert any(p.name == "inner.zip" for p in pr.nested_extracted)
+
+
+def test_written_count_includes_over_depth_containers(tmp_path):
+    level0 = _nested3(tmp_path)  # l0 -> l1.zip -> l2.zip -> deep.txt
+    res = zipmonkey.extract(level0, tmp_path / "out", recursive=True, max_depth=1)
+    # l1.zip recursed (nested_extracted), l2.zip left over-depth (skipped_nested).
+    assert res.count == 0
+    assert len(res.nested_extracted) == 1
+    assert len(res.skipped_nested) == 1
+    assert res.written_count == 2  # both containers are on disk
 
 
 def test_nested_archive_inherits_password(tmp_path):

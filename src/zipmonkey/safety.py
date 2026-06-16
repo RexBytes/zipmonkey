@@ -18,6 +18,7 @@ from typing import Any
 DEFAULT_MAX_DEPTH = 16
 DEFAULT_MAX_TOTAL_BYTES = 50 * 1024 * 1024 * 1024  # 50 GiB written to disk
 DEFAULT_MAX_FILES = 200_000  # bounds fan-out (file/inode) bombs
+DEFAULT_MAX_MEMBER_BYTES = 0  # per-member uncompressed cap; 0 = disabled
 
 
 class ArchiveLimitError(RuntimeError):
@@ -114,5 +115,27 @@ def check_file_count(
         raise ArchiveLimitError(
             f"extracted file count exceeded {max_files}; "
             f"raise max_files to allow",
+            partial_result=partial_result,
+        )
+
+
+def check_member_bytes(
+    size: int,
+    max_member: int,
+    name: str,
+    *,
+    partial_result: Any | None = None,
+) -> None:
+    """Raise :class:`ArchiveLimitError` if one member's declared size is too big.
+
+    Checked against each member's *declared* uncompressed size before it is
+    read, so an oversized member is rejected without being materialised. This
+    matters most for non-streaming backends (7z), where peak memory is
+    proportional to a single member. ``0`` or negative disables the check.
+    """
+    if max_member > 0 and size > max_member:
+        raise ArchiveLimitError(
+            f"member {name!r} uncompressed size {size} exceeds "
+            f"max_member_bytes {max_member}",
             partial_result=partial_result,
         )

@@ -21,7 +21,7 @@ import tempfile
 import zipfile
 import zlib
 from collections.abc import Callable, Iterator, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, BinaryIO
 
@@ -31,8 +31,10 @@ from .models import ArchiveEntry, ExtractResult, InspectReport, TypedFile
 from .safety import (
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_FILES,
+    DEFAULT_MAX_MEMBER_BYTES,
     DEFAULT_MAX_TOTAL_BYTES,
     check_file_count,
+    check_member_bytes,
     check_total_bytes,
     safe_target,
 )
@@ -66,10 +68,20 @@ class ArchiveReadError(ValueError):
     """
 
 
-# Low-level errors that mean "this member could not be read" (as opposed to a
-# safety-limit breach, which is ArchiveLimitError, a RuntimeError subclass that
-# must never be swallowed here).
-_READ_ERRORS = (RuntimeError, zlib.error, lzma.LZMAError, EOFError)
+# Low-level errors that mean "this member could not be read" (wrong/missing
+# password, bad CRC, corrupt compressed data). Note BadZipFile and BadGzipFile
+# are NOT RuntimeError/each-other (BadZipFile subclasses Exception directly,
+# BadGzipFile subclasses OSError), so both bases are listed explicitly.
+# ArchiveLimitError (a RuntimeError subclass) is raised only OUTSIDE the
+# narrow read-guarded blocks, so it is never swallowed here.
+_READ_ERRORS = (
+    RuntimeError,
+    OSError,
+    zlib.error,
+    lzma.LZMAError,
+    EOFError,
+    zipfile.BadZipFile,
+)
 
 
 def _as_read_error(name: str, exc: BaseException) -> ArchiveReadError:
@@ -331,11 +343,17 @@ class _SevenZipBackend(_Backend):
         return out
 
     def read(self, name: str) -> bytes:
-        with self._py7zr.SevenZipFile(
-            self._path, mode="r", password=self._password
-        ) as zf:
-            data = zf.read([name])
-            return data[name].read()
+        # py7zr corrupt-member / bad-password errors subclass Exception (not in
+        # _READ_ERRORS); normalise them here so the read contract holds. peek
+        # and open_stream both route through read, so this covers them too.
+        try:
+            with self._py7zr.SevenZipFile(
+                self._path, mode="r", password=self._password
+            ) as zf:
+                data = zf.read([name])
+                return data[name].read()
+        except Exception as exc:
+            raise _as_read_error(name, exc) from exc
 
     def peek(self, name: str, n: int) -> bytes:
         return self.read(name)[:n]
@@ -363,6 +381,29 @@ class _RarBackend(_Backend):
         self._rf = rarfile.RarFile(path)
         if password is not None:
             self._rf.setpassword(password.decode("utf-8"))
+        self._specials = {
+            info.filename
+            for info in self._rf.infolist()
+            if self._rar_special(info)
+        }
+
+    @staticmethod
+    def _rar_special(info: object) -> bool:
+        """True for RAR symlinks / redirects (mark special, like tar/zip links).
+
+        RAR5 records symlinks and other redirects in ``file_redir``; older
+        ``rarfile`` versions expose ``is_symlink()``. Probed defensively so the
+        backend works across versions.
+        """
+        if getattr(info, "file_redir", None):
+            return True
+        is_symlink = getattr(info, "is_symlink", None)
+        if callable(is_symlink):
+            try:
+                return bool(is_symlink())
+            except Exception:  # noqa: BLE001 - backend version differences
+                return False
+        return False
 
     def entries(self) -> list[ArchiveEntry]:
         out: list[ArchiveEntry] = []
@@ -374,19 +415,36 @@ class _RarBackend(_Backend):
                     compressed_size=getattr(info, "compress_size", 0) or 0,
                     is_dir=info.isdir(),
                     is_artifact=is_os_artifact(info.filename),
+                    is_special=self._rar_special(info),
                 )
             )
         return out
 
     def read(self, name: str) -> bytes:
-        return self._rf.read(name)
+        if name in self._specials:
+            return b""
+        # rarfile corrupt/bad-password errors subclass Exception; normalise.
+        try:
+            return self._rf.read(name)
+        except Exception as exc:
+            raise _as_read_error(name, exc) from exc
 
     def peek(self, name: str, n: int) -> bytes:
-        with self._rf.open(name) as fh:
-            return fh.read(n)
+        if name in self._specials:
+            return b""
+        try:
+            with self._rf.open(name) as fh:
+                return fh.read(n)
+        except Exception as exc:
+            raise _as_read_error(name, exc) from exc
 
-    def open_stream(self, name: str) -> BinaryIO:
-        return self._rf.open(name)  # type: ignore[return-value]
+    def open_stream(self, name: str) -> BinaryIO | None:
+        if name in self._specials:
+            return None
+        try:
+            return self._rf.open(name)  # type: ignore[return-value]
+        except Exception as exc:
+            raise _as_read_error(name, exc) from exc
 
     def close(self) -> None:
         self._rf.close()
@@ -588,6 +646,7 @@ class _Ctx:
 
     max_total_bytes: int
     max_files: int
+    max_member_bytes: int
     max_depth: int
     clean_artifacts: bool
     overwrite: bool
@@ -596,6 +655,7 @@ class _Ctx:
     flat: bool
     total_bytes: int = 0
     file_count: int = 0
+    written_targets: set[Path] = field(default_factory=set)
 
 
 # --------------------------------------------------------------------------- #
@@ -778,6 +838,7 @@ class Archive:
         max_depth: int = DEFAULT_MAX_DEPTH,
         max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
         max_files: int = DEFAULT_MAX_FILES,
+        max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES,
     ) -> ExtractResult:
         """Extract members to ``dest`` with filtering, flattening, recursion.
 
@@ -818,6 +879,11 @@ class Archive:
                 ``ExtractResult.written_count`` rather than ``count`` (which is
                 leaf-only). Bounds fan-out bombs. Exceeding it raises
                 ``ArchiveLimitError``. ``<= 0`` disables.
+            max_member_bytes: Per-member cap on declared uncompressed size,
+                checked before the member is read. Most valuable for the
+                non-streaming 7z backend (it bounds peak memory, which a single
+                member would otherwise dominate); applies to every backend.
+                Exceeding it raises ``ArchiveLimitError``. ``<= 0`` disables.
 
         Returns:
             An :class:`~zipmonkey.models.ExtractResult` recording what was
@@ -838,6 +904,7 @@ class Archive:
         ctx = _Ctx(
             max_total_bytes=max_total_bytes,
             max_files=max_files,
+            max_member_bytes=max_member_bytes,
             max_depth=max_depth,
             clean_artifacts=clean_artifacts,
             overwrite=overwrite,
@@ -880,7 +947,16 @@ class Archive:
 
             is_arc = False
             if recursive:
-                head = backend.peek(e.name, _PEEK_BYTES)
+                # A non-streaming backend (7z) materialises the whole member to
+                # peek it, so enforce the per-member cap *before* peeking.
+                if not backend.streaming:
+                    check_member_bytes(
+                        e.size, ctx.max_member_bytes, e.name, partial_result=result
+                    )
+                try:
+                    head = backend.peek(e.name, _PEEK_BYTES)
+                except _READ_ERRORS as exc:
+                    raise _as_read_error(e.name, exc) from exc
                 # Pass the filename so zip-container documents (xlsx/docx/jar/…)
                 # are classified as leaves, not unpacked as raw zips.
                 is_arc = is_archive_type(detect_type(head, filename=e.name))
@@ -899,16 +975,28 @@ class Archive:
                 result.skipped_existing.append(e.name)
                 continue
 
-            # Preflight caps BEFORE writing so the over-limit member is never
-            # materialised on disk. file_count is only incremented after a
-            # successful (non-collision) write, so the prospective +1 is exact.
+            # Two members can normalise to the same path (e.g. "a.txt" and
+            # "./a.txt"); the first wins, the rest are collisions rather than
+            # silent overwrites that would desync `extracted` from disk.
+            if target in ctx.written_targets:
+                result.skipped_collisions.append(e.name)
+                continue
+
+            # Detect file/dir name clashes ("foo" plus "foo/bar") BEFORE the cap
+            # preflight, so a member that cannot be written never consumes the
+            # file/byte budget (which would raise a spurious ArchiveLimitError).
+            if self._prepare_target(target) == "collision":
+                result.skipped_collisions.append(e.name)
+                continue
+
+            # Preflight caps now that the member is known to be writable, so an
+            # over-limit member is rejected before it is materialised on disk.
             check_file_count(
                 ctx.file_count + 1, ctx.max_files, partial_result=result
             )
-            # Non-streaming backends (7z) materialise the whole member before
-            # the chunked write can count it, so preflight the *declared*
-            # uncompressed size against the budget to reject oversized members
-            # before any decompression happens.
+            check_member_bytes(
+                e.size, ctx.max_member_bytes, e.name, partial_result=result
+            )
             if not backend.streaming and ctx.max_total_bytes > 0:
                 check_total_bytes(
                     ctx.total_bytes + e.size,
@@ -922,21 +1010,21 @@ class Archive:
                 continue
 
             ctx.file_count += 1
+            ctx.written_targets.add(target)
 
             if is_arc:
                 if ctx.max_depth <= 0 or depth + 1 <= ctx.max_depth:
-                    unpacked = self._recurse_one(
+                    # _recurse_one records the container in nested_extracted as
+                    # soon as it opens; a False return means archive magic but
+                    # not a valid archive, so it is really a leaf.
+                    if not self._recurse_one(
                         archive_path=target,
                         top_dest=dest,
                         ctx=ctx,
                         result=result,
                         depth=depth + 1,
                         flat_used=flat_used,
-                    )
-                    if unpacked:
-                        result.nested_extracted.append(target)
-                    else:
-                        # Archive magic but not a valid archive: it is a leaf.
+                    ):
                         result.extracted.append(target)
                 else:
                     result.skipped_nested.append(str(target))
@@ -960,6 +1048,22 @@ class Archive:
             return dest / _unique_basename(resolved.name, dest, flat_used)
         return resolved
 
+    def _prepare_target(self, target: Path) -> str:
+        """Create the parent dir and detect file/dir name clashes.
+
+        Returns ``"collision"`` when the member cannot be placed (a path
+        component is a file, or the target itself is an existing directory),
+        else ``"ok"``. Run before the cap preflight so an unplaceable member
+        does not consume the file/byte budget.
+        """
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+        except (FileExistsError, NotADirectoryError):
+            return "collision"
+        if target.exists() and target.is_dir():
+            return "collision"
+        return "ok"
+
     def _write_member(
         self,
         backend: _Backend,
@@ -968,15 +1072,6 @@ class Archive:
         ctx: _Ctx,
         result: ExtractResult,
     ) -> str:
-        # A file/dir name clash (archive has both "foo" and "foo/bar") cannot
-        # be represented on a normal filesystem: report it as a collision.
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-        except (FileExistsError, NotADirectoryError):
-            return "collision"
-        if target.exists() and target.is_dir():
-            return "collision"
-
         try:
             stream = backend.open_stream(name)
         except _READ_ERRORS as exc:
@@ -987,36 +1082,41 @@ class Archive:
             except (IsADirectoryError, NotADirectoryError):
                 return "collision"
             return "written"
+
         try:
-            with builtins.open(target, "wb") as out:
-                while True:
-                    try:
-                        chunk = stream.read(_CHUNK)
-                    except _READ_ERRORS as exc:
-                        # Wrong password / corrupt member mid-stream: drop the
-                        # partial file and surface a normalised error.
-                        out.close()
-                        target.unlink(missing_ok=True)
-                        raise _as_read_error(name, exc) from exc
-                    if not chunk:
-                        break
-                    ctx.total_bytes += len(chunk)
-                    if (
-                        ctx.max_total_bytes > 0
-                        and ctx.total_bytes > ctx.max_total_bytes
-                    ):
-                        out.close()
-                        target.unlink(missing_ok=True)
-                        check_total_bytes(
-                            ctx.total_bytes,
-                            ctx.max_total_bytes,
-                            partial_result=result,
-                        )
-                    out.write(chunk)
+            out = builtins.open(target, "wb")
         except (IsADirectoryError, NotADirectoryError):
-            return "collision"
-        finally:
             stream.close()
+            return "collision"
+
+        # `completed` gates the finally cleanup: on ANY failure (normalised read
+        # error, ArchiveLimitError from the cap, or an OSError such as disk-full
+        # from out.write) the partial file is removed rather than left corrupt.
+        completed = False
+        try:
+            while True:
+                try:
+                    chunk = stream.read(_CHUNK)
+                except _READ_ERRORS as exc:
+                    raise _as_read_error(name, exc) from exc
+                if not chunk:
+                    break
+                prospective = ctx.total_bytes + len(chunk)
+                if (
+                    ctx.max_total_bytes > 0
+                    and prospective > ctx.max_total_bytes
+                ):
+                    check_total_bytes(
+                        prospective, ctx.max_total_bytes, partial_result=result
+                    )
+                out.write(chunk)
+                ctx.total_bytes = prospective
+            completed = True
+        finally:
+            out.close()
+            stream.close()
+            if not completed:
+                target.unlink(missing_ok=True)
         return "written"
 
     def _recurse_one(
@@ -1041,6 +1141,10 @@ class Archive:
             sub_backend = _open_backend(archive_path, self._password)
         except (UnsupportedArchiveError, FileNotFoundError):
             return False
+
+        # Record the container as soon as it opens, so it is accounted for even
+        # if a cap aborts the inner extraction partway (the file is on disk).
+        result.nested_extracted.append(archive_path)
 
         if ctx.flat:
             sub_dest = top_dest
