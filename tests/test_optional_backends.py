@@ -49,6 +49,7 @@ class _StubNonStreaming:
 
     def __init__(self):
         self.opened = False
+        self.peeked = False
 
     def entries(self):
         return [
@@ -64,7 +65,8 @@ class _StubNonStreaming:
     def read(self, name):  # pragma: no cover - not reached
         return b"x" * 10
 
-    def peek(self, name, n):  # pragma: no cover - not reached
+    def peek(self, name, n):
+        self.peeked = True  # for 7z this would materialise the whole member
         return b"x" * n
 
     def open_stream(self, name):
@@ -99,6 +101,21 @@ def test_max_member_bytes_rejects_before_materialising(tmp_path):
         arc._backend = stub
         with pytest.raises(zipmonkey.ArchiveLimitError):
             arc.extract(tmp_path / "out", max_member_bytes=1024)
+        assert stub.opened is False
+
+
+def test_non_streaming_recursive_cap_rejects_before_peek(tmp_path):
+    # Under recursion the archive-sniff peek() materialises a non-streaming
+    # member; the per-member cap must reject an oversized member BEFORE peek.
+    z = tmp_path / "tiny.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("placeholder.txt", b"x")
+    with zipmonkey.open(z) as arc:
+        stub = _StubNonStreaming()  # declares a 10 MB member
+        arc._backend = stub
+        with pytest.raises(zipmonkey.ArchiveLimitError):
+            arc.extract(tmp_path / "out", recursive=True, max_member_bytes=1024)
+        assert stub.peeked is False  # rejected before the materialising peek
         assert stub.opened is False
 
 
