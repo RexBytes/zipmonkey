@@ -110,6 +110,14 @@ def test_cli_bad_archive_returns_1(tmp_path, capsys):
     assert rc == 1
 
 
+def test_cli_corrupt_zip_returns_1(tmp_path, capsys):
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"PK\x03\x04 corrupt not a real zip")
+    rc = main(["inspect", str(bad)])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
 def test_cli_requires_subcommand(capsys):
     with pytest.raises(SystemExit):
         build_parser().parse_args([])

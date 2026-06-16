@@ -48,11 +48,11 @@ describes only the current library.
 
 ---
 
-### `max_total_bytes` counts bytes written to disk, including nested containers
-- **Concern:** When recursing, a nested archive's own (compressed) bytes are counted toward the cap *and* so are its decompressed contents, so the running total exceeds the sum of leaf-file sizes.
-- **Decision:** The cap measures everything written under `dest`, container files included.
-- **Rationale:** The cap is a disk/decompression-bomb guard; the relevant quantity is "how much did we write to the filesystem," which is exactly what bounds the damage. Counting only leaf bytes would let a deeply nested tree of containers consume disk while staying under the cap. The number is intentionally conservative.
-- **Escape hatch:** Raise `max_total_bytes`, or extract without `recursive` and unpack containers selectively.
+### `max_total_bytes` / `max_files` count nested containers; `count` does not
+- **Concern:** The byte and file caps include nested-archive container files, so an `ArchiveLimitError` can fire while `ExtractResult.count` (leaf files) is still below the cap; the running byte total also exceeds the sum of leaf-file sizes.
+- **Decision:** Both caps measure everything written under `dest` (containers included); `ExtractResult.written_count` exposes that figure while `count` stays leaf-only.
+- **Rationale:** The caps are disk/decompression/fan-out guards; the quantity that bounds damage is "how much did we write to the filesystem," which is exactly what is counted. Counting only leaves would let a deeply nested tree of containers consume disk/inodes while staying under the cap. `count` is leaf-only because that is what callers dispatch on.
+- **Escape hatch:** Compare against `result.written_count`; raise `max_total_bytes`/`max_files` (or set `0`); or extract without `recursive`.
 
 ## Behaviour is the contract (changing the default would break callers)
 

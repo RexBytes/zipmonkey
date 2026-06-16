@@ -12,8 +12,12 @@ import tarfile
 import zipfile
 from pathlib import Path
 
-from hypothesis import HealthCheck, assume, given, settings
-from hypothesis import strategies as st
+import pytest
+
+pytest.importorskip("hypothesis")
+
+from hypothesis import HealthCheck, assume, given, settings  # noqa: E402
+from hypothesis import strategies as st  # noqa: E402
 
 import zipmonkey
 from zipmonkey.detect import category_for, detect_type

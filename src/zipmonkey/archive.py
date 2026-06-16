@@ -371,11 +371,16 @@ def _open_backend(path: Path, password: bytes | None) -> _Backend:
     outer = detect_type(head)
 
     if outer == "zip":
-        return _ZipBackend(path, password)
+        try:
+            return _ZipBackend(path, password)
+        except zipfile.BadZipFile as exc:
+            raise UnsupportedArchiveError(
+                f"corrupt or unsupported zip archive: {path}"
+            ) from exc
     if outer == "7z":
-        return _SevenZipBackend(path, password)
+        return _build_optional("7z", lambda: _SevenZipBackend(path, password), path)
     if outer == "rar":
-        return _RarBackend(path, password)
+        return _build_optional("rar", lambda: _RarBackend(path, password), path)
 
     if outer in ("gzip", "bzip2", "xz"):
         try:
@@ -403,6 +408,23 @@ def _open_backend(path: Path, password: bytes | None) -> _Backend:
     except _DECOMP_ERRORS as exc:
         raise UnsupportedArchiveError(
             f"unrecognised or unsupported archive format: {path}"
+        ) from exc
+
+
+def _build_optional(kind: str, factory, path: Path) -> _Backend:
+    """Construct an optional-dependency backend, normalising corrupt-file errors.
+
+    A missing optional dependency already surfaces as UnsupportedArchiveError;
+    any other construction failure (a corrupt 7z/rar with archive magic) is
+    re-raised as UnsupportedArchiveError so the contract holds for every format.
+    """
+    try:
+        return factory()
+    except UnsupportedArchiveError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - backend boundary normalisation
+        raise UnsupportedArchiveError(
+            f"corrupt or unsupported {kind} archive: {path}"
         ) from exc
 
 
@@ -685,9 +707,11 @@ class Archive:
                 member cannot exhaust memory. Exceeding it raises
                 :class:`~zipmonkey.safety.ArchiveLimitError` (with the partial
                 result attached). ``<= 0`` disables.
-            max_files: Cap on the total number of files written (bounds fan-out
-                bombs). Exceeding it raises ``ArchiveLimitError``. ``<= 0``
-                disables.
+            max_files: Cap on the total number of files written to disk —
+                including nested-archive containers, so it matches
+                ``ExtractResult.written_count`` rather than ``count`` (which is
+                leaf-only). Bounds fan-out bombs. Exceeding it raises
+                ``ArchiveLimitError``. ``<= 0`` disables.
 
         Returns:
             An :class:`~zipmonkey.models.ExtractResult` recording what was
@@ -772,9 +796,8 @@ class Archive:
             check_file_count(ctx.file_count, ctx.max_files, partial_result=result)
 
             if is_arc:
-                result.nested_extracted.append(target)
                 if ctx.max_depth <= 0 or depth + 1 <= ctx.max_depth:
-                    self._recurse_one(
+                    unpacked = self._recurse_one(
                         archive_path=target,
                         top_dest=dest,
                         ctx=ctx,
@@ -782,6 +805,11 @@ class Archive:
                         depth=depth + 1,
                         flat_used=flat_used,
                     )
+                    if unpacked:
+                        result.nested_extracted.append(target)
+                    else:
+                        # Archive magic but not a valid archive: it is a leaf.
+                        result.extracted.append(target)
                 else:
                     result.skipped_nested.append(str(target))
             else:
@@ -862,11 +890,16 @@ class Archive:
         result: ExtractResult,
         depth: int,
         flat_used: set[str],
-    ) -> None:
+    ) -> bool:
+        """Recursively extract ``archive_path``; return False if it won't open.
+
+        A False return means the file had archive magic but is not a valid
+        archive, so the caller should treat it as a normal leaf file.
+        """
         try:
             sub_backend = _open_backend(archive_path, None)
         except (UnsupportedArchiveError, FileNotFoundError):
-            return
+            return False
 
         if ctx.flat:
             sub_dest = top_dest
@@ -888,6 +921,7 @@ class Archive:
             )
         finally:
             sub_backend.close()
+        return True
 
     # -- typed walking --------------------------------------------------- #
 
