@@ -125,7 +125,10 @@ def _cmd_extract(args: argparse.Namespace) -> int:
     if result.skipped_unsafe:
         print(f"skipped {len(result.skipped_unsafe)} unsafe path(s)")
     if result.nested_extracted:
-        print(f"unpacked {len(result.nested_extracted)} nested archive(s)")
+        print(
+            f"unpacked {len(result.nested_extracted)} nested archive(s) "
+            f"(containers kept on disk)"
+        )
     if args.verbose:
         # Surface every skip bucket so nothing is silently dropped.
         for label, bucket in (

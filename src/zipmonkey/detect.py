@@ -51,13 +51,19 @@ _EXT_TYPES: dict[str, str] = {
     ".yml": "yaml",
 }
 
-# Extension overrides for zip-based and OLE-based Office containers, which all
-# share a single magic number with their generic container.
+# Extension overrides for zip-based containers, which share a single magic
+# number with the generic zip container. These resolve to their own type labels
+# so recursive extraction treats them as leaf files rather than unpacking them
+# as raw zips.
 _ZIP_OFFICE: dict[str, str] = {
     ".xlsx": "xlsx",
     ".xlsm": "xlsm",
     ".docx": "docx",
     ".pptx": "pptx",
+    ".jar": "jar",
+    ".war": "war",
+    ".ear": "ear",
+    ".apk": "apk",
 }
 _OLE_OFFICE: dict[str, str] = {
     ".xls": "xls",

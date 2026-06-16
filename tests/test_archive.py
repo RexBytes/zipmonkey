@@ -323,6 +323,41 @@ def test_open_member_streams_in_chunks(zip_factory):
     assert collected == b"abcdefghij" * 100
 
 
+def test_extract_paths_are_absolute_for_relative_dest(tmp_path, monkeypatch):
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("sub/x.txt", b"1")
+    monkeypatch.chdir(tmp_path)
+    res = zipmonkey.extract(z, "relout")  # relative dest
+    assert res.dest.is_absolute()
+    assert all(p.is_absolute() for p in res.extracted)
+
+
+def test_flat_extract_paths_absolute_for_relative_dest(tmp_path, monkeypatch):
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("sub/x.txt", b"1")
+    monkeypatch.chdir(tmp_path)
+    res = zipmonkey.extract(z, "relout", flat=True)
+    assert all(p.is_absolute() for p in res.extracted)
+
+
+def test_zip_symlink_marked_special_and_skipped(tmp_path):
+    z = tmp_path / "links.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        info = zipfile.ZipInfo("alias.txt")
+        info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+        zf.writestr(info, "target.txt")  # body is the link target
+        zf.writestr("target.txt", b"real")
+    rep = zipmonkey.inspect(z)
+    link = next(e for e in rep.entries if e.name == "alias.txt")
+    assert link.is_special is True
+    res = zipmonkey.extract(z, tmp_path / "out")
+    assert res.skipped_links == ["alias.txt"]
+    assert not (tmp_path / "out" / "alias.txt").exists()
+    assert (tmp_path / "out" / "target.txt").read_bytes() == b"real"
+
+
 def test_open_member_directory_returns_empty_stream(tmp_path):
     z = tmp_path / "d.zip"
     with zipfile.ZipFile(z, "w") as zf:
@@ -383,6 +418,21 @@ def test_file_count_limit_enforced(tmp_path):
     with pytest.raises(zipmonkey.ArchiveLimitError) as exc:
         zipmonkey.extract(z, tmp_path / "out", max_files=3)
     assert exc.value.partial_result is not None
+
+
+def test_file_count_limit_preflight_does_not_write_over_limit(tmp_path):
+    # The over-limit member must NOT be written to disk (preflight, not
+    # write-then-fail), and the partial result must match what is on disk.
+    z = tmp_path / "two.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.txt", b"a")
+        zf.writestr("b.txt", b"b")
+    out = tmp_path / "out"
+    with pytest.raises(zipmonkey.ArchiveLimitError) as exc:
+        zipmonkey.extract(z, out, max_files=1)
+    on_disk = sorted(p.name for p in out.iterdir())
+    assert on_disk == ["a.txt"]  # b.txt never written
+    assert [p.name for p in exc.value.partial_result.extracted] == ["a.txt"]
 
 
 # -- include + recursive reaches inside nested archives (H1) ---------------- #
@@ -529,6 +579,48 @@ def test_corrupt_zip_raises_unsupported(tmp_path):
     bad.write_bytes(b"PK\x03\x04 then total garbage, not a real central dir")
     with pytest.raises(zipmonkey.UnsupportedArchiveError):
         zipmonkey.open(bad)
+
+
+def test_recursive_does_not_unpack_xlsx(tmp_path):
+    # An .xlsx (a zip container) inside an archive must be treated as an Excel
+    # leaf, not unpacked into its XML parts.
+    xlsx = tmp_path / "report.xlsx"
+    with zipfile.ZipFile(xlsx, "w") as zf:
+        zf.writestr("[Content_Types].xml", "<Types/>")
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+    outer = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(xlsx, "report.xlsx")
+    out = tmp_path / "out"
+    res = zipmonkey.extract(outer, out, recursive=True)
+    assert [p.name for p in res.extracted] == ["report.xlsx"]
+    assert res.nested_extracted == []
+    assert not (out / "report.xlsx_extracted").exists()
+
+
+def test_walk_typed_xlsx_is_excel_leaf(tmp_path):
+    xlsx = tmp_path / "report.xlsx"
+    with zipfile.ZipFile(xlsx, "w") as zf:
+        zf.writestr("xl/workbook.xml", "<workbook/>")
+    outer = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(xlsx, "report.xlsx")
+    typed = list(zipmonkey.walk_typed(outer, tmp_path / "out"))
+    assert [(t.path.name, t.detected_type, t.category) for t in typed] == [
+        ("report.xlsx", "xlsx", "excel")
+    ]
+
+
+def test_recursive_does_not_unpack_jar(tmp_path):
+    jar = tmp_path / "app.jar"
+    with zipfile.ZipFile(jar, "w") as zf:
+        zf.writestr("META-INF/MANIFEST.MF", "Manifest-Version: 1.0\n")
+    outer = tmp_path / "bundle.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(jar, "app.jar")
+    res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
+    assert [p.name for p in res.extracted] == ["app.jar"]
+    assert res.nested_extracted == []
 
 
 def test_recursive_invalid_archive_magic_kept_as_leaf(tmp_path):
