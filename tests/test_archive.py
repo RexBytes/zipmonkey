@@ -310,6 +310,29 @@ def test_namelist(zip_factory):
         assert set(arc.namelist()) == {"a.txt", "b.txt"}
 
 
+def test_open_member_streams_in_chunks(zip_factory):
+    z = zip_factory("a.zip", {"big.txt": b"abcdefghij" * 100})
+    with zipmonkey.open(z) as arc:
+        with arc.open_member("big.txt") as fh:
+            collected = b""
+            while True:
+                chunk = fh.read(64)
+                if not chunk:
+                    break
+                collected += chunk
+    assert collected == b"abcdefghij" * 100
+
+
+def test_open_member_directory_returns_empty_stream(tmp_path):
+    z = tmp_path / "d.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("d/", b"")
+        zf.writestr("d/f.txt", b"hi")
+    with zipmonkey.open(z) as arc:
+        with arc.open_member("d/") as fh:
+            assert fh.read() == b""
+
+
 # -- walk_typed ------------------------------------------------------------- #
 
 
@@ -497,6 +520,51 @@ def test_corrupt_gzip_raises_unsupported(tmp_path):
     bad.write_bytes(b"\x1f\x8b\x08\x00" + b"\x00" * 8 + b"not valid deflate")
     with pytest.raises(zipmonkey.UnsupportedArchiveError):
         zipmonkey.open(bad)
+
+
+def test_corrupt_zip_raises_unsupported(tmp_path):
+    # ZIP magic but not a valid zip must surface as UnsupportedArchiveError,
+    # not a raw zipfile.BadZipFile.
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"PK\x03\x04 then total garbage, not a real central dir")
+    with pytest.raises(zipmonkey.UnsupportedArchiveError):
+        zipmonkey.open(bad)
+
+
+def test_recursive_invalid_archive_magic_kept_as_leaf(tmp_path):
+    # A member with archive magic that is NOT a valid archive must be reported
+    # as an extracted leaf, never as nested_extracted (it was not unpacked).
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.writestr("fake.zip", b"PK\x03\x04 not actually a zip")
+        zf.writestr("real.txt", b"hi")
+    res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
+    names = {p.name for p in res.extracted}
+    assert "fake.zip" in names  # kept as a leaf
+    assert "real.txt" in names
+    assert res.nested_extracted == []  # nothing was actually unpacked
+
+
+def test_written_count_includes_containers(tmp_path):
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("a.txt", b"A")
+        zf.writestr("b.txt", b"B")
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(inner, "inner.zip")
+    res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
+    assert res.count == 2  # leaves a.txt, b.txt
+    assert len(res.nested_extracted) == 1  # inner.zip container
+    assert res.written_count == 3  # what max_files counts
+
+
+def test_depth_skipped_not_double_listed(tmp_path):
+    # An over-depth archive belongs in skipped_nested only, not nested_extracted.
+    level0 = _nested3(tmp_path)
+    res = zipmonkey.extract(level0, tmp_path / "out", recursive=True, max_depth=1)
+    assert len(res.skipped_nested) == 1
+    assert not any(str(p).endswith("l2.zip") for p in res.nested_extracted)
 
 
 # -- single-file backends (bz2/xz) and fallback name ------------------------ #

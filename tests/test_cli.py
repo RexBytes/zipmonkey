@@ -110,9 +110,32 @@ def test_cli_bad_archive_returns_1(tmp_path, capsys):
     assert rc == 1
 
 
+def test_cli_corrupt_zip_returns_1(tmp_path, capsys):
+    bad = tmp_path / "bad.zip"
+    bad.write_bytes(b"PK\x03\x04 corrupt not a real zip")
+    rc = main(["inspect", str(bad)])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
 def test_cli_requires_subcommand(capsys):
     with pytest.raises(SystemExit):
         build_parser().parse_args([])
+
+
+def test_password_accepted_after_subcommand():
+    args = build_parser().parse_args(["inspect", "a.zip", "--password", "x"])
+    assert args.password == "x"
+
+
+def test_password_accepted_before_subcommand():
+    args = build_parser().parse_args(["--password", "x", "inspect", "a.zip"])
+    assert args.password == "x"
+
+
+def test_password_default_none_either_position():
+    args = build_parser().parse_args(["inspect", "a.zip"])
+    assert args.password is None
 
 
 def test_tree_file_dir_name_clash_renders_dir(tmp_path, capsys):

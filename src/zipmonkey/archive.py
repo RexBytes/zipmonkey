@@ -371,11 +371,16 @@ def _open_backend(path: Path, password: bytes | None) -> _Backend:
     outer = detect_type(head)
 
     if outer == "zip":
-        return _ZipBackend(path, password)
+        try:
+            return _ZipBackend(path, password)
+        except zipfile.BadZipFile as exc:
+            raise UnsupportedArchiveError(
+                f"corrupt or unsupported zip archive: {path}"
+            ) from exc
     if outer == "7z":
-        return _SevenZipBackend(path, password)
+        return _build_optional("7z", lambda: _SevenZipBackend(path, password), path)
     if outer == "rar":
-        return _RarBackend(path, password)
+        return _build_optional("rar", lambda: _RarBackend(path, password), path)
 
     if outer in ("gzip", "bzip2", "xz"):
         try:
@@ -403,6 +408,23 @@ def _open_backend(path: Path, password: bytes | None) -> _Backend:
     except _DECOMP_ERRORS as exc:
         raise UnsupportedArchiveError(
             f"unrecognised or unsupported archive format: {path}"
+        ) from exc
+
+
+def _build_optional(kind: str, factory, path: Path) -> _Backend:
+    """Construct an optional-dependency backend, normalising corrupt-file errors.
+
+    A missing optional dependency already surfaces as UnsupportedArchiveError;
+    any other construction failure (a corrupt 7z/rar with archive magic) is
+    re-raised as UnsupportedArchiveError so the contract holds for every format.
+    """
+    try:
+        return factory()
+    except UnsupportedArchiveError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - backend boundary normalisation
+        raise UnsupportedArchiveError(
+            f"corrupt or unsupported {kind} archive: {path}"
         ) from exc
 
 
@@ -584,11 +606,36 @@ class Archive:
         return [e.name for e in self._backend.entries()]
 
     def read(self, name: str) -> bytes:
-        """Read one member's uncompressed bytes by name.
+        """Read one member's uncompressed bytes by name, into memory.
+
+        A convenience for trusted or small members: the entire uncompressed
+        payload is materialised, so it does **not** honour the extraction byte
+        caps. For large or untrusted members use :meth:`open_member` and read
+        in bounded chunks, or :meth:`extract` (which streams under a cap).
 
         Returns ``b""`` for a directory or special (link/device) member.
         """
         return self._backend.read(name)
+
+    def open_member(self, name: str) -> BinaryIO:
+        """Return a readable binary stream for one member (caller closes it).
+
+        The streaming counterpart to :meth:`read`: read in bounded chunks
+        instead of materialising the whole payload, e.g.::
+
+            with arc.open_member("big.bin") as fh:
+                while chunk := fh.read(1 << 20):
+                    ...
+
+        This raw stream is not subject to the extraction byte caps; enforce
+        your own limit while reading untrusted input.
+        """
+        stream = self._backend.open_stream(name)
+        if stream is None:  # directory / special member
+            import io
+
+            return io.BytesIO(b"")
+        return stream
 
     def inspect(self, *, detect_types: bool = True) -> InspectReport:
         """Summarise the archive without extracting it.
@@ -679,15 +726,20 @@ class Archive:
                 skipped and recorded in ``skipped_existing``.
             max_depth: Maximum nested-archive nesting depth. ``max_depth=1``
                 unpacks one level of nesting; archives beyond the limit are left
-                on disk and listed in ``skipped_nested``. ``<= 0`` disables.
+                on disk and listed in ``skipped_nested``. ``<= 0`` disables the
+                depth cap (unlimited nesting, still bounded by
+                ``max_total_bytes`` and ``max_files``) — it does not turn off
+                recursion, which is controlled by ``recursive``.
             max_total_bytes: Cap on cumulative bytes written to disk across the
                 whole operation. Enforced *while streaming*, so a single huge
                 member cannot exhaust memory. Exceeding it raises
                 :class:`~zipmonkey.safety.ArchiveLimitError` (with the partial
                 result attached). ``<= 0`` disables.
-            max_files: Cap on the total number of files written (bounds fan-out
-                bombs). Exceeding it raises ``ArchiveLimitError``. ``<= 0``
-                disables.
+            max_files: Cap on the total number of files written to disk —
+                including nested-archive containers, so it matches
+                ``ExtractResult.written_count`` rather than ``count`` (which is
+                leaf-only). Bounds fan-out bombs. Exceeding it raises
+                ``ArchiveLimitError``. ``<= 0`` disables.
 
         Returns:
             An :class:`~zipmonkey.models.ExtractResult` recording what was
@@ -772,9 +824,8 @@ class Archive:
             check_file_count(ctx.file_count, ctx.max_files, partial_result=result)
 
             if is_arc:
-                result.nested_extracted.append(target)
                 if ctx.max_depth <= 0 or depth + 1 <= ctx.max_depth:
-                    self._recurse_one(
+                    unpacked = self._recurse_one(
                         archive_path=target,
                         top_dest=dest,
                         ctx=ctx,
@@ -782,6 +833,11 @@ class Archive:
                         depth=depth + 1,
                         flat_used=flat_used,
                     )
+                    if unpacked:
+                        result.nested_extracted.append(target)
+                    else:
+                        # Archive magic but not a valid archive: it is a leaf.
+                        result.extracted.append(target)
                 else:
                     result.skipped_nested.append(str(target))
             else:
@@ -862,11 +918,16 @@ class Archive:
         result: ExtractResult,
         depth: int,
         flat_used: set[str],
-    ) -> None:
+    ) -> bool:
+        """Recursively extract ``archive_path``; return False if it won't open.
+
+        A False return means the file had archive magic but is not a valid
+        archive, so the caller should treat it as a normal leaf file.
+        """
         try:
             sub_backend = _open_backend(archive_path, None)
         except (UnsupportedArchiveError, FileNotFoundError):
-            return
+            return False
 
         if ctx.flat:
             sub_dest = top_dest
@@ -888,6 +949,7 @@ class Archive:
             )
         finally:
             sub_backend.close()
+        return True
 
     # -- typed walking --------------------------------------------------- #
 

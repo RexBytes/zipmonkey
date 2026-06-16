@@ -40,6 +40,12 @@ describes only the current library.
 - **Rationale:** Tar compresses the *whole stream*, not individual members, so there is no per-member compressed size to report — the information does not exist in the format. Synthesising a plausible-looking number (e.g. prorating the stream size) would invent data the format never recorded. `ArchiveEntry.size` (uncompressed) is always accurate.
 - **Escape hatch:** For an overall figure, compare `os.path.getsize(archive)` against `InspectReport.total_size` yourself.
 
+### Inspecting a standalone gzip/bzip2/xz streams the whole payload to size it
+- **Concern:** `inspect("huge.gz")` reads the entire decompressed stream to report `total_size`, with no inspect-time byte cap — slow for very large single-file streams.
+- **Decision:** Stream-count the decompressed bytes (O(1) memory, O(n) time) to populate `ArchiveEntry.size`.
+- **Rationale:** gzip stores only a mod-2³² uncompressed size in its trailer (wrong above 4 GiB) and bzip2 stores none, so there is no portable, trustworthy size to read cheaply. A streaming count is memory-safe (it never materialises the payload — that bomb is already closed), and inspection is an opt-in operation a caller chooses to run. The byte cap belongs to `extract`, which is where untrusted bulk extraction happens.
+- **Escape hatch:** Skip inspection and stream the member yourself via `Archive.open_member`, or `os.path.getsize` the compressed file if only the on-disk size matters.
+
 ### ZIP AES encryption is unsupported
 - **Concern:** A password-protected ZIP using WinZip AES fails to read even with the correct password.
 - **Decision:** Support only what stdlib `zipfile` supports (legacy ZipCrypto).
@@ -48,11 +54,11 @@ describes only the current library.
 
 ---
 
-### `max_total_bytes` counts bytes written to disk, including nested containers
-- **Concern:** When recursing, a nested archive's own (compressed) bytes are counted toward the cap *and* so are its decompressed contents, so the running total exceeds the sum of leaf-file sizes.
-- **Decision:** The cap measures everything written under `dest`, container files included.
-- **Rationale:** The cap is a disk/decompression-bomb guard; the relevant quantity is "how much did we write to the filesystem," which is exactly what bounds the damage. Counting only leaf bytes would let a deeply nested tree of containers consume disk while staying under the cap. The number is intentionally conservative.
-- **Escape hatch:** Raise `max_total_bytes`, or extract without `recursive` and unpack containers selectively.
+### `max_total_bytes` / `max_files` count nested containers; `count` does not
+- **Concern:** The byte and file caps include nested-archive container files, so an `ArchiveLimitError` can fire while `ExtractResult.count` (leaf files) is still below the cap; the running byte total also exceeds the sum of leaf-file sizes.
+- **Decision:** Both caps measure everything written under `dest` (containers included); `ExtractResult.written_count` exposes that figure while `count` stays leaf-only.
+- **Rationale:** The caps are disk/decompression/fan-out guards; the quantity that bounds damage is "how much did we write to the filesystem," which is exactly what is counted. Counting only leaves would let a deeply nested tree of containers consume disk/inodes while staying under the cap. `count` is leaf-only because that is what callers dispatch on.
+- **Escape hatch:** Compare against `result.written_count`; raise `max_total_bytes`/`max_files` (or set `0`); or extract without `recursive`.
 
 ## Behaviour is the contract (changing the default would break callers)
 

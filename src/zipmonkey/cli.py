@@ -138,15 +138,31 @@ def build_parser() -> argparse.ArgumentParser:
         prog="zipmonkey",
         description="Smart archive inspection and extraction.",
     )
-    parser.add_argument("--password", help="password for encrypted archives")
+    parser.add_argument(
+        "--password",
+        default=None,
+        help="password for encrypted archives (accepted before or after "
+        "the subcommand)",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
+
+    def _add_password(sp: argparse.ArgumentParser) -> None:
+        # SUPPRESS default so omitting it after the subcommand does not clobber
+        # a value given before the subcommand.
+        sp.add_argument(
+            "--password",
+            default=argparse.SUPPRESS,
+            help="password for encrypted archives",
+        )
 
     p_inspect = sub.add_parser("inspect", help="summarise without extracting")
     p_inspect.add_argument("archive", type=Path)
+    _add_password(p_inspect)
     p_inspect.set_defaults(func=_cmd_inspect)
 
     p_tree = sub.add_parser("tree", help="print archive contents as a tree")
     p_tree.add_argument("archive", type=Path)
+    _add_password(p_tree)
     p_tree.set_defaults(func=_cmd_tree)
 
     p_extract = sub.add_parser("extract", help="extract archive contents")
@@ -172,7 +188,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--max-depth",
         type=int,
         default=DEFAULT_MAX_DEPTH,
-        help="max nested-archive depth with --recursive (0 disables)",
+        help="max nesting depth with --recursive (0 = no depth cap; "
+        "recursion still bounded by --max-files/--max-total-bytes)",
     )
     p_extract.add_argument(
         "--max-total-bytes",
@@ -186,6 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=DEFAULT_MAX_FILES,
         help="cap on total files written (fan-out guard; 0 disables)",
     )
+    _add_password(p_extract)
     p_extract.set_defaults(func=_cmd_extract)
     return parser
 

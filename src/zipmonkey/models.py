@@ -162,5 +162,14 @@ class ExtractResult:
 
     @property
     def count(self) -> int:
-        """Number of files written (excluding skipped members)."""
+        """Number of *leaf* files written (excludes nested archive containers)."""
         return len(self.extracted)
+
+    @property
+    def written_count(self) -> int:
+        """Total files written to disk: leaf files plus nested containers.
+
+        This is what the ``max_files`` cap measures, so it can exceed
+        :attr:`count` when recursive extraction wrote container files too.
+        """
+        return len(self.extracted) + len(self.nested_extracted)
