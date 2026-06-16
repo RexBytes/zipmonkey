@@ -20,10 +20,10 @@ import tarfile
 import tempfile
 import zipfile
 import zlib
-from collections.abc import Iterator, Sequence
-from dataclasses import dataclass, field
+from collections.abc import Callable, Iterator, Sequence
+from dataclasses import dataclass
 from pathlib import Path
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 from .artifacts import is_os_artifact
 from .detect import category_for, detect_type, is_archive_type
@@ -54,6 +54,26 @@ _DECOMP_ERRORS = (
 
 class UnsupportedArchiveError(ValueError):
     """Raised when a path is not a recognised / supported archive format."""
+
+
+class ArchiveReadError(ValueError):
+    """Raised when a member cannot be read (wrong/missing password, corrupt data).
+
+    Normalises the assorted low-level errors the backends raise at read time
+    (e.g. ``zipfile``'s ``RuntimeError: Bad password``, ``zlib``/``lzma`` decode
+    errors) into one package-level exception, so callers and the CLI get a
+    consistent, catchable failure instead of a library-specific traceback.
+    """
+
+
+# Low-level errors that mean "this member could not be read" (as opposed to a
+# safety-limit breach, which is ArchiveLimitError, a RuntimeError subclass that
+# must never be swallowed here).
+_READ_ERRORS = (RuntimeError, zlib.error, lzma.LZMAError, EOFError)
+
+
+def _as_read_error(name: str, exc: BaseException) -> ArchiveReadError:
+    return ArchiveReadError(f"cannot read member {name!r}: {exc}")
 
 
 # --------------------------------------------------------------------------- #
@@ -214,8 +234,12 @@ class _SingleFileBackend(_Backend):
     def __init__(self, path: Path, outer: str) -> None:
         self.format = outer
         self._path = path
-        opener = {"gzip": gzip.open, "bzip2": bz2.open, "xz": lzma.open}[outer]
-        self._opener = opener
+        openers: dict[str, Callable[..., Any]] = {
+            "gzip": gzip.open,
+            "bzip2": bz2.open,
+            "xz": lzma.open,
+        }
+        self._opener: Callable[..., Any] = openers[outer]
         self._compressed_size = path.stat().st_size
 
         member = path.name
@@ -651,8 +675,15 @@ class Archive:
         in bounded chunks, or :meth:`extract` (which streams under a cap).
 
         Returns ``b""`` for a directory or special (link/device) member.
+
+        Raises:
+            ArchiveReadError: If the member cannot be read (e.g. wrong/missing
+                password or corrupt data).
         """
-        return self._backend.read(name)
+        try:
+            return self._backend.read(name)
+        except _READ_ERRORS as exc:
+            raise _as_read_error(name, exc) from exc
 
     def open_member(self, name: str) -> BinaryIO:
         """Return a readable binary stream for one member (caller closes it).
@@ -666,8 +697,15 @@ class Archive:
 
         This raw stream is not subject to the extraction byte caps; enforce
         your own limit while reading untrusted input.
+
+        Raises:
+            ArchiveReadError: If the member cannot be opened (e.g. wrong/missing
+                password).
         """
-        stream = self._backend.open_stream(name)
+        try:
+            stream = self._backend.open_stream(name)
+        except _READ_ERRORS as exc:
+            raise _as_read_error(name, exc) from exc
         if stream is None:  # directory / special member
             import io
 
@@ -694,7 +732,10 @@ class Archive:
         for e in raw:
             dtype: str | None = None
             if detect_types and not e.is_dir and not e.is_special:
-                head = self._backend.peek(e.name, _PEEK_BYTES)
+                try:
+                    head = self._backend.peek(e.name, _PEEK_BYTES)
+                except _READ_ERRORS as exc:
+                    raise _as_read_error(e.name, exc) from exc
                 dtype = detect_type(head, filename=e.name)
             entries.append(
                 ArchiveEntry(
@@ -936,7 +977,10 @@ class Archive:
         if target.exists() and target.is_dir():
             return "collision"
 
-        stream = backend.open_stream(name)
+        try:
+            stream = backend.open_stream(name)
+        except _READ_ERRORS as exc:
+            raise _as_read_error(name, exc) from exc
         if stream is None:
             try:
                 target.write_bytes(b"")
@@ -946,7 +990,14 @@ class Archive:
         try:
             with builtins.open(target, "wb") as out:
                 while True:
-                    chunk = stream.read(_CHUNK)
+                    try:
+                        chunk = stream.read(_CHUNK)
+                    except _READ_ERRORS as exc:
+                        # Wrong password / corrupt member mid-stream: drop the
+                        # partial file and surface a normalised error.
+                        out.close()
+                        target.unlink(missing_ok=True)
+                        raise _as_read_error(name, exc) from exc
                     if not chunk:
                         break
                     ctx.total_bytes += len(chunk)
@@ -995,7 +1046,9 @@ class Archive:
             sub_dest = top_dest
             sub_flat_used = flat_used
         else:
-            sub_dest = _unique_dir(archive_path.with_name(archive_path.name + "_extracted"))
+            sub_dest = _unique_dir(
+                archive_path.with_name(archive_path.name + "_extracted")
+            )
             sub_flat_used = set()
 
         try:

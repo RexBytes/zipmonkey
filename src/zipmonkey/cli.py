@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from .archive import Archive, UnsupportedArchiveError
+from .archive import Archive, ArchiveReadError, UnsupportedArchiveError
 from .models import ArchiveEntry
 from .safety import (
     DEFAULT_MAX_DEPTH,
@@ -97,8 +97,12 @@ def _cmd_tree(args: argparse.Namespace) -> int:
             indent = "  " * depth
             leaf = parts[depth]
             entry = meta.get(prefix)
-            is_file = entry is not None and not entry.is_dir and prefix not in parents
-            if is_file:
+            is_file = (
+                entry is not None
+                and not entry.is_dir
+                and prefix not in parents
+            )
+            if is_file and entry is not None:
                 print(f"{indent}{leaf}  ({_human_size(entry.size)})")
             else:
                 print(f"{indent}{leaf}/")
@@ -245,7 +249,7 @@ def main(argv: list[str] | None = None) -> int:
     except FileNotFoundError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 2
-    except (UnsupportedArchiveError, ArchiveLimitError) as exc:
+    except (UnsupportedArchiveError, ArchiveReadError, ArchiveLimitError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     except OSError as exc:

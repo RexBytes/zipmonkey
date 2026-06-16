@@ -10,7 +10,6 @@ from __future__ import annotations
 import io
 import tarfile
 import zipfile
-from pathlib import Path
 
 import pytest
 
@@ -155,4 +154,5 @@ def test_walk_typed_category_matches_detect(tmp_path_factory, members):
     for tf in zipmonkey.walk_typed(archive, tmp / "out", clean_artifacts=False):
         # The dispatch invariant: category is always category_for(detected_type).
         assert tf.category == category_for(tf.detected_type)
-        assert tf.category == category_for(detect_type(tf.path.read_bytes(), filename=tf.path.name))
+        from_disk = detect_type(tf.path.read_bytes(), filename=tf.path.name)
+        assert tf.category == category_for(from_disk)

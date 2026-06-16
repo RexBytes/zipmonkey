@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import io
-import os
 import tarfile
 import zipfile
 from pathlib import Path
@@ -11,8 +10,7 @@ from pathlib import Path
 import pytest
 
 import zipmonkey
-from zipmonkey.archive import Archive, UnsupportedArchiveError
-
+from zipmonkey.archive import UnsupportedArchiveError
 
 # -- open / format detection ------------------------------------------------ #
 
@@ -768,15 +766,29 @@ def test_password_correct_decrypts(tmp_path):
 def test_password_wrong_raises(tmp_path):
     enc = _make_encrypted_zip(tmp_path)
     with zipmonkey.open(enc, password=b"WRONG") as arc:
-        with pytest.raises(RuntimeError):  # zipfile raises "Bad password"
+        # Normalised to ArchiveReadError (not a raw zipfile RuntimeError).
+        with pytest.raises(zipmonkey.ArchiveReadError):
             arc.read("s.txt")
 
 
 def test_password_missing_raises(tmp_path):
     enc = _make_encrypted_zip(tmp_path)
     with zipmonkey.open(enc) as arc:
-        with pytest.raises(RuntimeError):
+        with pytest.raises(zipmonkey.ArchiveReadError):
             arc.read("s.txt")
+
+
+def test_password_wrong_inspect_raises_read_error(tmp_path):
+    enc = _make_encrypted_zip(tmp_path)
+    with zipmonkey.open(enc, password=b"WRONG") as arc:
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.inspect()  # peek() per member hits the bad password
+
+
+def test_password_wrong_extract_raises_read_error(tmp_path):
+    enc = _make_encrypted_zip(tmp_path)
+    with pytest.raises(zipmonkey.ArchiveReadError):
+        zipmonkey.extract(enc, tmp_path / "out", password=b"WRONG")
 
 
 def test_nested_archive_inherits_password(tmp_path):
