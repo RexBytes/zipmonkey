@@ -38,7 +38,7 @@ behaviour like tar showing a 0.00 compression ratio).
 - `__MACOSX/`, `.DS_Store`, AppleDouble `._*`, `Thumbs.db`, `desktop.ini` stripped by default.
 - Path traversal — `..` escapes, NUL/control chars, and symlink-prefix escapes skipped; absolutes re-rooted under `dest`.
 - Nested archives (zip-in-zip, tar.gz-in-zip) unpacked recursively; `include`/`exclude`/`flat` apply through recursion, leaf filters still reach inside containers.
-- Decompression-bomb caps enforced *while streaming* (no full-member buffering): `max_total_bytes` (50 GiB) + fan-out cap `max_files` (200k) raise `ArchiveLimitError`; `max_depth` (16) records over-deep archives in `skipped_nested` instead of raising.
+- Decompression-bomb caps enforced *while streaming* (no full-member buffering) for ZIP/tar/gzip/bzip2/xz/rar: `max_total_bytes` (50 GiB) + fan-out cap `max_files` (200k) raise `ArchiveLimitError`; `max_depth` (16) records over-deep archives in `skipped_nested` instead of raising. Optional 7z materialises members in memory (declared-size preflight guards the cap) — use a small `max_total_bytes` for untrusted large 7z.
 - Format detected by magic bytes, not extension; corrupt streams raise `UnsupportedArchiveError`, never a raw `EOFError`/`zlib.error`.
 - Flatten basename collisions renamed `name (1).ext`, never overwritten — checked against files already on disk too.
 - Tar symlinks/hardlinks/devices skipped (recorded in `skipped_links`), not materialised.
