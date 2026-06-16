@@ -659,3 +659,17 @@ def test_password_missing_raises(tmp_path):
     with zipmonkey.open(enc) as arc:
         with pytest.raises(RuntimeError):
             arc.read("s.txt")
+
+
+def test_nested_archive_inherits_password(tmp_path):
+    # An encrypted inner zip embedded in an outer zip must decrypt during
+    # recursive extraction using the top-level password.
+    inner_enc = _make_encrypted_zip(tmp_path)  # secret.zip with s.txt
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(inner_enc, "nested/secret.zip")
+    res = zipmonkey.extract(
+        outer, tmp_path / "out", password=b"hunter2", recursive=True
+    )
+    leaf = next(p for p in res.extracted if p.name == "s.txt")
+    assert leaf.read_bytes() == b"classified"

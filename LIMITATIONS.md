@@ -104,6 +104,12 @@ describes only the current library.
 - **Rationale:** A name used as both a file and a directory cannot coexist on a normal filesystem — there is no target path for both. Renaming one would invent a path the archive never specified and break callers that look files up by their archived name. Raising would abort an otherwise-fine extraction over a rare malformed input. Skipping is recoverable and visible.
 - **Escape hatch:** Inspect `result.skipped_collisions` and re-extract the clashing member to a different `dest`, or read it directly with `Archive.read(name)`.
 
+### Nested archives reuse the top-level password
+- **Concern:** During recursive extraction, a password-protected nested archive is opened with the *same* password given for the outer archive; there is no per-archive password.
+- **Decision:** Propagate the top-level password to every nested archive.
+- **Rationale:** The overwhelmingly common case is one password protecting a whole bundle, so reuse "just works." Supporting per-nested passwords would require a callback/mapping API that 99% of callers don't need. A nested archive that needs a *different* password surfaces its library's error at read time (e.g. `RuntimeError: Bad password`) rather than guessing.
+- **Escape hatch:** Extract non-recursively, then open each archive in `result.nested_extracted` yourself with its own password.
+
 ### Duplicate flat-mode basenames are renamed, not overwritten
 - **Concern:** Three members all named `data.csv` produce `data.csv`, `data (1).csv`, `data (2).csv` rather than one file.
 - **Decision:** Suffix `" (n)"` before the extension on collision.

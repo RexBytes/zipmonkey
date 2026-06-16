@@ -579,6 +579,7 @@ class Archive:
 
     def __init__(self, path: str | Path, *, password: bytes | None = None) -> None:
         self.path = Path(path)
+        self._password = password
         self._backend = _open_backend(self.path, password)
         self._temp_dirs: list[Path] = []
         self._closed = False
@@ -954,8 +955,11 @@ class Archive:
         A False return means the file had archive magic but is not a valid
         archive, so the caller should treat it as a normal leaf file.
         """
+        # Nested archives reuse the top-level password (a common case is one
+        # password protecting the whole bundle). A nested archive needing a
+        # different password will surface its library's error at read time.
         try:
-            sub_backend = _open_backend(archive_path, None)
+            sub_backend = _open_backend(archive_path, self._password)
         except (UnsupportedArchiveError, FileNotFoundError):
             return False
 
