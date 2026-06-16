@@ -78,6 +78,7 @@ describes only the current library.
 - **Concern:** A tar symlink, hardlink, device, or FIFO member is not recreated; it lands in `ExtractResult.skipped_links`.
 - **Decision:** Extract only regular files and directories; record special members and skip them.
 - **Rationale:** Materialising a symlink from an untrusted archive is a traversal vector (a link to `/etc` followed by a write "through" it), and recreating devices/FIFOs is rarely what a data pipeline wants. Writing the link's *target bytes* as a regular file (tar's `extractfile` behaviour) would silently duplicate/leak data. Skipping is the safe, predictable choice; `is_special` on the inspect report tells you they exist.
+- **Note:** ZIP symlinks are detected from the Unix mode in `ZipInfo.external_attr`; a symlink stored without that metadata (some non-Unix tools) is not recognised and extracts as a regular file containing the target path — harmless (no link is created), just not flagged in `skipped_links`.
 - **Escape hatch:** Use stdlib `tarfile` with your own `filter=` if you genuinely need links recreated.
 
 ### Nested archives beyond `max_depth` are left on disk, not treated as an error

@@ -186,7 +186,9 @@ def test_extract_cli_no_verbose_omits_skip_buckets(tmp_path, capsys):
     rc = main(["extract", str(z), str(tmp_path / "o"), "--exclude", "*.log"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert "filtered" not in out
+    assert "filtered" not in out  # detail withheld without --verbose
+    # ...but a hint that something was skipped is shown.
+    assert "1 other member(s) skipped; rerun with --verbose" in out
 
 
 def test_extract_cli_max_files_limit(tmp_path, capsys):

@@ -44,11 +44,11 @@ def safe_target(dest: Path, member_name: str) -> Path | None:
     within ``dest``; otherwise ``None`` is returned so the caller can skip the
     member.
 
-    Absolute member paths (``/etc/passwd``) and Windows drive specifiers are
-    **re-rooted** under ``dest`` (the leading separator/drive is stripped), not
-    rejected — matching the long-standing behaviour of ``zipfile`` and ``tar``.
-    Only ``..`` escapes, NUL/control characters, and members resolving to
-    ``dest`` itself are rejected (returning ``None``).
+    Absolute member paths (``/etc/passwd``) are **re-rooted** under ``dest``
+    (the leading separator is stripped), matching the long-standing behaviour
+    of ``zipfile`` and ``tar``. Windows drive specifiers (``C:...``), ``..``
+    escapes, NUL/control characters, and members resolving to ``dest`` itself
+    are **rejected** (returning ``None``).
 
     Args:
         dest: The extraction root. Need not exist yet; its existing prefix is

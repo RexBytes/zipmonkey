@@ -129,17 +129,25 @@ def _cmd_extract(args: argparse.Namespace) -> int:
             f"unpacked {len(result.nested_extracted)} nested archive(s) "
             f"(containers kept on disk)"
         )
+    verbose_buckets = (
+        ("filtered", result.skipped_filtered),
+        ("collision", result.skipped_collisions),
+        ("existing", result.skipped_existing),
+        ("link/special", result.skipped_links),
+        ("over-depth nested", result.skipped_nested),
+    )
     if args.verbose:
         # Surface every skip bucket so nothing is silently dropped.
-        for label, bucket in (
-            ("filtered", result.skipped_filtered),
-            ("collision", result.skipped_collisions),
-            ("existing", result.skipped_existing),
-            ("link/special", result.skipped_links),
-            ("over-depth nested", result.skipped_nested),
-        ):
+        for label, bucket in verbose_buckets:
             if bucket:
                 print(f"skipped {len(bucket)} {label}: {', '.join(bucket)}")
+    else:
+        hidden = sum(len(bucket) for _, bucket in verbose_buckets)
+        if hidden:
+            print(
+                f"{hidden} other member(s) skipped; "
+                f"rerun with --verbose for details"
+            )
     return 0
 
 
