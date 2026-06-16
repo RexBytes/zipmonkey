@@ -69,6 +69,8 @@ rar when the optional extras are installed.
 zipmonkey inspect bundle.zip      # summary + per-file table
 zipmonkey tree    bundle.zip      # indented content tree
 zipmonkey extract bundle.zip out --include "*.csv" --recursive --flat
+# safety caps and overwrite are flags (0 disables a cap):
+zipmonkey extract big.zip out --max-total-bytes 0 --max-files 0 --max-depth 0 --no-overwrite
 ```
 
 ## Pairs well with

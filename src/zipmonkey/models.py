@@ -25,6 +25,10 @@ class ArchiveEntry:
         is_dir: True when the member is a directory entry.
         is_artifact: True when the member is an OS-generated junk file
             (see :func:`zipmonkey.artifacts.is_os_artifact`).
+        is_special: True when the member is neither a regular file nor a
+            directory — a symlink, hardlink, device, or FIFO (only tar stores
+            these). Special members are skipped during extraction rather than
+            materialised.
         detected_type: A short type label (e.g. ``"csv"``, ``"pdf"``,
             ``"zip"``) inferred from magic bytes, or ``None`` when not
             inspected. Directories always carry ``None``.
@@ -35,6 +39,7 @@ class ArchiveEntry:
     compressed_size: int
     is_dir: bool
     is_artifact: bool
+    is_special: bool = False
     detected_type: str | None = None
 
     @property
@@ -125,13 +130,23 @@ class ExtractResult:
         skipped_filtered: Member names skipped because of include/exclude
             filters.
         skipped_unsafe: Member names skipped because their target path
-            escaped ``dest`` (path-traversal protection).
+            escaped ``dest`` (path-traversal protection) or contained
+            NUL/control characters.
         skipped_collisions: Member names skipped because their target path
             collided with an already-written file/directory of the same name
             (an archive containing both ``foo`` and ``foo/bar`` cannot place
             both on a normal filesystem).
-        nested_extracted: Absolute paths of nested archives that were
+        skipped_existing: Member names skipped because their target already
+            existed and ``overwrite=False`` was requested.
+        skipped_links: Member names skipped because they were special members
+            (symlink/hardlink/device/FIFO); see ``ArchiveEntry.is_special``.
+        skipped_nested: Absolute paths (as strings) of nested archives that
+            were *not* recursively unpacked because they sat beyond
+            ``max_depth``. The container file is left on disk untouched.
+        nested_extracted: Absolute paths of nested archives that *were*
             recursively unpacked (only populated when ``recursive=True``).
+            Nested archive containers are recorded here, not in ``extracted``;
+            ``extracted`` holds only leaf (non-archive) files.
     """
 
     dest: Path
@@ -140,6 +155,9 @@ class ExtractResult:
     skipped_filtered: list[str] = field(default_factory=list)
     skipped_unsafe: list[str] = field(default_factory=list)
     skipped_collisions: list[str] = field(default_factory=list)
+    skipped_existing: list[str] = field(default_factory=list)
+    skipped_links: list[str] = field(default_factory=list)
+    skipped_nested: list[str] = field(default_factory=list)
     nested_extracted: list[Path] = field(default_factory=list)
 
     @property

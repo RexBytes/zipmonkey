@@ -13,21 +13,32 @@ from pathlib import Path
 
 from .archive import Archive, UnsupportedArchiveError
 from .models import ArchiveEntry
-from .safety import ArchiveLimitError
+from .safety import (
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_FILES,
+    DEFAULT_MAX_TOTAL_BYTES,
+    ArchiveLimitError,
+)
 
 
 def _human_size(n: int) -> str:
-    """Format a byte count as a short human string (e.g. ``1.5K``, ``2.0M``)."""
-    step = 1024.0
+    """Format a byte count as a short human string (e.g. ``1.5K``, ``2.0M``).
+
+    Carries to the next unit when rounding would otherwise display ``1024.0``
+    of the current unit (so ``1048575`` reads ``1.0M``, not ``1024.0K``).
+    """
     units = ["B", "K", "M", "G", "T", "P"]
     size = float(n)
-    for unit in units:
-        if size < step or unit == units[-1]:
-            if unit == "B":
-                return f"{int(size)}{unit}"
-            return f"{size:.1f}{unit}"
-        size /= step
-    return f"{size:.1f}P"  # pragma: no cover - unreachable
+    i = 0
+    while i < len(units) - 1 and size >= 1024:
+        size /= 1024
+        i += 1
+    if i < len(units) - 1 and round(size, 1) >= 1024:
+        size /= 1024
+        i += 1
+    if units[i] == "B":
+        return f"{int(size)}{units[i]}"
+    return f"{size:.1f}{units[i]}"
 
 
 def _entry_type(entry: ArchiveEntry) -> str:
@@ -68,6 +79,13 @@ def _cmd_tree(args: argparse.Namespace) -> int:
     meta = {
         e.name.replace("\\", "/").rstrip("/"): e for e in report.entries
     }
+    # A prefix that other members live under is a directory, even if a file
+    # member shares its name (the file/dir name clash recorded as a collision).
+    parents: set[str] = set()
+    for name in names:
+        parts = name.split("/")
+        for depth in range(1, len(parts)):
+            parents.add("/".join(parts[:depth]))
     seen: set[str] = set()
     for name in names:
         parts = name.split("/")
@@ -79,7 +97,8 @@ def _cmd_tree(args: argparse.Namespace) -> int:
             indent = "  " * depth
             leaf = parts[depth]
             entry = meta.get(prefix)
-            if entry is not None and not entry.is_dir:
+            is_file = entry is not None and not entry.is_dir and prefix not in parents
+            if is_file:
                 print(f"{indent}{leaf}  ({_human_size(entry.size)})")
             else:
                 print(f"{indent}{leaf}/")
@@ -95,6 +114,10 @@ def _cmd_extract(args: argparse.Namespace) -> int:
             flat=args.flat,
             recursive=args.recursive,
             clean_artifacts=not args.keep_artifacts,
+            overwrite=not args.no_overwrite,
+            max_depth=args.max_depth,
+            max_total_bytes=args.max_total_bytes,
+            max_files=args.max_files,
         )
     print(f"extracted {result.count} file(s) to {result.dest}")
     if result.skipped_artifacts:
@@ -140,6 +163,29 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="do not strip OS junk (__MACOSX, .DS_Store, ...)",
     )
+    p_extract.add_argument(
+        "--no-overwrite",
+        action="store_true",
+        help="skip members whose target already exists",
+    )
+    p_extract.add_argument(
+        "--max-depth",
+        type=int,
+        default=DEFAULT_MAX_DEPTH,
+        help="max nested-archive depth with --recursive (0 disables)",
+    )
+    p_extract.add_argument(
+        "--max-total-bytes",
+        type=int,
+        default=DEFAULT_MAX_TOTAL_BYTES,
+        help="cap on total bytes written (decompression-bomb guard; 0 disables)",
+    )
+    p_extract.add_argument(
+        "--max-files",
+        type=int,
+        default=DEFAULT_MAX_FILES,
+        help="cap on total files written (fan-out guard; 0 disables)",
+    )
     p_extract.set_defaults(func=_cmd_extract)
     return parser
 
@@ -156,6 +202,10 @@ def main(argv: list[str] | None = None) -> int:
     except (UnsupportedArchiveError, ArchiveLimitError) as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1
+    except OSError as exc:
+        # PermissionError, NotADirectoryError, disk-full, etc.
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":  # pragma: no cover

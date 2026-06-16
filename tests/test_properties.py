@@ -7,6 +7,8 @@ structure preserved and no member lost or corrupted.
 
 from __future__ import annotations
 
+import io
+import tarfile
 import zipfile
 from pathlib import Path
 
@@ -14,6 +16,7 @@ from hypothesis import HealthCheck, assume, given, settings
 from hypothesis import strategies as st
 
 import zipmonkey
+from zipmonkey.detect import category_for, detect_type
 
 
 def _has_prefix_collision(names) -> bool:
@@ -88,3 +91,64 @@ def test_flat_extraction_loses_no_files(tmp_path_factory, members):
     result = zipmonkey.extract(archive, tmp / "flat", flat=True, clean_artifacts=False)
     # Flatten may rename, but never drops a file.
     assert result.count == len(members)
+
+
+@settings(max_examples=80, suppress_health_check=[HealthCheck.too_slow])
+@given(
+    members=st.dictionaries(_relpath, _payload, min_size=1, max_size=6),
+    mode=st.sampled_from(["w", "w:gz", "w:bz2", "w:xz"]),
+)
+def test_tar_roundtrip(tmp_path_factory, members, mode):
+    assume(not _has_prefix_collision(members))
+    tmp = tmp_path_factory.mktemp("rt")
+    archive = tmp / "a.tar"
+    with tarfile.open(archive, mode) as tf:
+        for name, data in members.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+    dest = tmp / "out"
+    result = zipmonkey.extract(archive, dest, clean_artifacts=False)
+    assert result.count == len(members)
+    for name, data in members.items():
+        assert (dest / name).read_bytes() == data
+
+
+@settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
+@given(members=st.dictionaries(_relpath, _payload, min_size=1, max_size=5))
+def test_recursive_roundtrip_reaches_nested_payloads(tmp_path_factory, members):
+    assume(not _has_prefix_collision(members))
+    tmp = tmp_path_factory.mktemp("rt")
+    inner = tmp / "inner.zip"
+    with zipfile.ZipFile(inner, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+    outer = tmp / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(inner, "nested/inner.zip")
+
+    dest = tmp / "out"
+    zipmonkey.extract(outer, dest, recursive=True, clean_artifacts=False)
+    # Each nested member is written under inner.zip_extracted/<name> with its
+    # exact bytes (true even if a payload happens to look like an archive: it
+    # is written to disk before any recursion decision).
+    sub = dest / "nested" / "inner.zip_extracted"
+    for name, data in members.items():
+        assert (sub / name).read_bytes() == data
+
+
+@settings(max_examples=60, suppress_health_check=[HealthCheck.too_slow])
+@given(members=st.dictionaries(_relpath, _payload, min_size=1, max_size=5))
+def test_walk_typed_category_matches_detect(tmp_path_factory, members):
+    assume(not _has_prefix_collision(members))
+    tmp = tmp_path_factory.mktemp("rt")
+    archive = tmp / "a.zip"
+    with zipfile.ZipFile(archive, "w") as zf:
+        for name, data in members.items():
+            zf.writestr(name, data)
+
+    for tf in zipmonkey.walk_typed(archive, tmp / "out", clean_artifacts=False):
+        # The dispatch invariant: category is always category_for(detected_type).
+        assert tf.category == category_for(tf.detected_type)
+        assert tf.category == category_for(detect_type(tf.path.read_bytes(), filename=tf.path.name))

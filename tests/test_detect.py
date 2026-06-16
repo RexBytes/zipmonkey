@@ -48,6 +48,23 @@ def test_zip_refined_to_xlsx_by_extension():
     assert detect_type(b"PK\x03\x04", filename="doc.docx") == "docx"
 
 
+def test_xlsm_is_its_own_type():
+    # .xlsm is macro-enabled Excel; it must not collapse to "xlsx".
+    assert detect_type(b"PK\x03\x04", filename="macro.xlsm") == "xlsm"
+    assert category_for("xlsm") == "excel"
+
+
+def test_utf8_multibyte_split_at_sample_boundary_is_text():
+    # A 3-byte euro sign cut after its first byte must NOT read as binary.
+    sample = b"x" * 519 + "€".encode("utf-8")[:1]
+    assert detect_type(sample) == "text"
+
+
+def test_trailing_dot_does_not_defeat_extension():
+    assert detect_type(b"PK\x03\x04", filename="book.xlsx.") == "xlsx"
+    assert detect_type(b"a,b\n", filename="data.csv.") == "csv"
+
+
 def test_zip_without_office_ext_stays_zip():
     assert detect_type(b"PK\x03\x04", filename="archive.zip") == "zip"
 
@@ -114,13 +131,21 @@ def test_is_archive_type(label, expected):
     [
         ("csv", "tabular"),
         ("tsv", "tabular"),
+        ("psv", "tabular"),
         ("pdf", "pdf"),
         ("xlsx", "excel"),
+        ("xlsm", "excel"),
         ("xls", "excel"),
         ("zip", "archive"),
         ("tar", "archive"),
+        ("gzip", "archive"),
+        ("bzip2", "archive"),
+        ("xz", "archive"),
+        ("7z", "archive"),
+        ("rar", "archive"),
         ("png", "other"),
         ("unknown", "other"),
+        ("", "other"),
     ],
 )
 def test_category_for(label, bucket):

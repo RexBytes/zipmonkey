@@ -18,6 +18,10 @@ def _entry(name="f", size=100, csize=25, is_dir=False, artifact=False, dtype=Non
     )
 
 
+def test_is_special_defaults_false():
+    assert _entry().is_special is False
+
+
 def test_compression_ratio_normal():
     assert _entry(size=100, csize=25).compression_ratio == 0.25
 

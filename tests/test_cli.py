@@ -19,8 +19,12 @@ from zipmonkey.cli import _human_size, build_parser, main
         (1023, "1023B"),
         (1024, "1.0K"),
         (1536, "1.5K"),
+        (1047552, "1023.0K"),  # 1023 KiB, stays in K
+        (1048575, "1.0M"),  # rolls over instead of "1024.0K"
         (1024 * 1024, "1.0M"),
         (1024 * 1024 * 1024, "1.0G"),
+        (1024**4, "1.0T"),
+        (1024**5, "1.0P"),
     ],
 )
 def test_human_size(n, expected):
@@ -109,3 +113,49 @@ def test_cli_bad_archive_returns_1(tmp_path, capsys):
 def test_cli_requires_subcommand(capsys):
     with pytest.raises(SystemExit):
         build_parser().parse_args([])
+
+
+def test_tree_file_dir_name_clash_renders_dir(tmp_path, capsys):
+    # Archive with both "foo" (file) and "foo/bar.txt": the shared prefix must
+    # render as a directory, not a file with children.
+    z = tmp_path / "clash.zip"
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_STORED) as zf:
+        zf.writestr("foo", b"12345678")
+        zf.writestr("foo/bar.txt", b"hello")
+    rc = main(["tree", str(z)])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert out == ("clash.zip\n" "foo/\n" "  bar.txt  (5B)\n")
+
+
+def test_inspect_real_compression_ratio(tmp_path):
+    # DEFLATED, moderately compressible -> a real ratio strictly inside (0, 1).
+    import zipmonkey
+
+    z = tmp_path / "c.zip"
+    payload = (b"abc123XYZ " * 400)  # 4000 bytes, partly compressible
+    with zipfile.ZipFile(z, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("z.txt", payload)
+    rep = zipmonkey.inspect(z)
+    # total_compressed must be wired from real per-member sizes, not constant.
+    assert 0 < rep.total_compressed < rep.total_size
+    assert 0.0 < rep.compression_ratio < 1.0
+
+
+def test_extract_cli_max_files_limit(tmp_path, capsys):
+    z = tmp_path / "m.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        for i in range(4):
+            zf.writestr(f"f{i}.txt", b"x")
+    rc = main(["extract", str(z), str(tmp_path / "o"), "--max-files", "2"])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_extract_cli_dest_under_file_returns_2(tmp_path, capsys):
+    z = _fixed_zip(tmp_path / "g.zip")
+    blocker = tmp_path / "blocker"
+    blocker.write_bytes(b"x")
+    rc = main(["extract", str(z), str(blocker / "sub")])
+    assert rc == 2
+    assert "error:" in capsys.readouterr().err

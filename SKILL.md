@@ -36,13 +36,14 @@ behaviour like tar showing a 0.00 compression ratio).
 ## Failure modes already handled (stop reinventing these)
 
 - `__MACOSX/`, `.DS_Store`, AppleDouble `._*`, `Thumbs.db`, `desktop.ini` stripped by default.
-- Path traversal (`../escape`, `/abs`) — `..` escapes skipped, absolutes re-rooted under `dest`.
-- Nested archives (zip-in-zip, tar.gz-in-zip) unpacked recursively with a depth cap.
-- Decompression-bomb cap via `max_total_bytes` (default 50 GiB) and `max_depth` (default 16).
-- Format detected by magic bytes, not extension — a mislabelled `.zip` that is really tar still opens.
-- Flatten basename collisions renamed `name (1).ext`, never overwritten.
-- Temp extraction dirs auto-removed on context-manager exit.
-- Compressed (gzip/bzip2/xz) single files exposed as a one-member archive.
+- Path traversal — `..` escapes, NUL/control chars, and symlink-prefix escapes skipped; absolutes re-rooted under `dest`.
+- Nested archives (zip-in-zip, tar.gz-in-zip) unpacked recursively; `include`/`exclude`/`flat` apply through recursion, leaf filters still reach inside containers.
+- Decompression-bomb caps enforced *while streaming* (no full-member buffering): `max_total_bytes` (50 GiB) + fan-out cap `max_files` (200k) raise `ArchiveLimitError`; `max_depth` (16) records over-deep archives in `skipped_nested` instead of raising.
+- Format detected by magic bytes, not extension; corrupt streams raise `UnsupportedArchiveError`, never a raw `EOFError`/`zlib.error`.
+- Flatten basename collisions renamed `name (1).ext`, never overwritten — checked against files already on disk too.
+- Tar symlinks/hardlinks/devices skipped (recorded in `skipped_links`), not materialised.
+- Temp extraction dirs auto-removed on context-manager exit (or via `__del__` backstop).
+- Compressed (gzip/bzip2/xz) single files exposed as a one-member archive, sized by streaming.
 
 ## Worked examples
 
@@ -72,11 +73,15 @@ res = zipmonkey.extract("bundle.zip", "out", include="*.csv", recursive=True)
 res.extracted          # [PosixPath('out/sub/a.csv'), ...]
 res.nested_extracted   # [PosixPath('out/nested/inner.zip')]  (kept on disk)
 
-# Dispatch by type.
+# Dispatch by type (yields LEAF files only; nested containers are not yielded).
 for tf in zipmonkey.walk_typed("bundle.zip", "out"):
     tf.detected_type   # "csv"
     tf.category        # "tabular"  -> hand to dsvmonkey
     # categories: "tabular", "pdf", "excel", "archive", "other"
+
+# ExtractResult skip buckets (each a list, all empty when nothing skipped):
+#   skipped_artifacts  skipped_filtered  skipped_unsafe
+#   skipped_collisions skipped_existing  skipped_links  skipped_nested
 ```
 
 Downstream dispatch mapping (`TypedFile.category`):
@@ -95,10 +100,13 @@ Downstream dispatch mapping (`TypedFile.category`):
 
 | Symptom | Likely cause | Action |
 |---|---|---|
-| `UnsupportedArchiveError` | Not a recognised format, or 7z/rar extra missing | `pip install zipmonkey[sevenzip]` / `[rar]` |
-| `ArchiveLimitError: ... bytes` | Decompression-bomb cap hit | Raise `max_total_bytes` if the archive is trusted |
-| `ArchiveLimitError: ... depth` | Nested archives deeper than 16 | Raise `max_depth` if trusted |
-| Member in `skipped_unsafe` | `..` path-traversal attempt | Expected; the file was a security risk |
+| `UnsupportedArchiveError` | Not a recognised/corrupt format, or 7z/rar extra missing | `pip install zipmonkey[sevenzip]` / `[rar]` |
+| `ArchiveLimitError: ... bytes` | Decompression-bomb cap hit | Raise `max_total_bytes` (or set 0) if trusted |
+| `ArchiveLimitError: ... file count` | Fan-out (too many files) cap hit | Raise `max_files` (or set 0) if trusted |
+| Archive in `skipped_nested` | Nested deeper than `max_depth` (16) | Raise `max_depth`; not an error |
+| Member in `skipped_unsafe` | `..`/NUL/symlink-escape path | Expected; the file was a security risk |
+| Member in `skipped_links` | tar symlink/device member | Expected; links are not materialised |
+| Member in `skipped_existing` | target exists and `overwrite=False` | Expected; remove the target or allow overwrite |
 | csv reported as `"text"` | No `.csv` extension supplied | Pass `filename=` to `detect_type` |
 | tar `ratio` is `0.00` | tar has no per-member compressed size | Expected (LIMITATIONS) |
 | Empty `extracted`, all in `skipped_filtered` | `include` glob matched nothing | Check pattern (matched against path *and* basename, case-insensitive) |

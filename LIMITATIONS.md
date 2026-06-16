@@ -40,12 +40,6 @@ describes only the current library.
 - **Rationale:** Tar compresses the *whole stream*, not individual members, so there is no per-member compressed size to report — the information does not exist in the format. Synthesising a plausible-looking number (e.g. prorating the stream size) would invent data the format never recorded. `ArchiveEntry.size` (uncompressed) is always accurate.
 - **Escape hatch:** For an overall figure, compare `os.path.getsize(archive)` against `InspectReport.total_size` yourself.
 
-### Single-file gzip/bzip2/xz is decompressed into memory to size it
-- **Concern:** Inspecting a lone `data.csv.gz` reads and decompresses the entire file to report its uncompressed size.
-- **Decision:** Materialise the decompressed bytes once (cached) for single-file streams.
-- **Rationale:** The gzip/bzip2/xz formats do not store the uncompressed size in a trailer we can trust portably (gzip's ISIZE is mod-2^32 and absent for the other two). Streaming-count would avoid the memory cost but complicate every read path for a format that, by definition, holds one file. For genuinely huge single-file streams, treat the member as a stream yourself.
-- **Escape hatch:** Decompress with stdlib `gzip`/`bz2`/`lzma` directly when the payload exceeds available memory.
-
 ### ZIP AES encryption is unsupported
 - **Concern:** A password-protected ZIP using WinZip AES fails to read even with the correct password.
 - **Decision:** Support only what stdlib `zipfile` supports (legacy ZipCrypto).
@@ -54,7 +48,31 @@ describes only the current library.
 
 ---
 
+### `max_total_bytes` counts bytes written to disk, including nested containers
+- **Concern:** When recursing, a nested archive's own (compressed) bytes are counted toward the cap *and* so are its decompressed contents, so the running total exceeds the sum of leaf-file sizes.
+- **Decision:** The cap measures everything written under `dest`, container files included.
+- **Rationale:** The cap is a disk/decompression-bomb guard; the relevant quantity is "how much did we write to the filesystem," which is exactly what bounds the damage. Counting only leaf bytes would let a deeply nested tree of containers consume disk while staying under the cap. The number is intentionally conservative.
+- **Escape hatch:** Raise `max_total_bytes`, or extract without `recursive` and unpack containers selectively.
+
 ## Behaviour is the contract (changing the default would break callers)
+
+### AppleDouble `._` prefix may flag legitimately-named files
+- **Concern:** A user file literally named `._notes.txt` (or a dotfile like `.__init__.py`) is treated as an OS artifact and skipped by default.
+- **Decision:** Any basename beginning with `._` is an OS artifact.
+- **Rationale:** macOS writes a `._<name>` AppleDouble resource fork for *every* file inside a non-HFS archive, so `._`-prefixed names are overwhelmingly junk. Distinguishing a genuine `._foo` from a resource fork requires checking for a sibling `foo`, which is fragile (the sibling may be filtered out) and still ambiguous. We accept the rare false positive.
+- **Escape hatch:** Pass `clean_artifacts=False` to keep every member, then filter yourself.
+
+### Tar special members (symlinks/hardlinks/devices) are skipped
+- **Concern:** A tar symlink, hardlink, device, or FIFO member is not recreated; it lands in `ExtractResult.skipped_links`.
+- **Decision:** Extract only regular files and directories; record special members and skip them.
+- **Rationale:** Materialising a symlink from an untrusted archive is a traversal vector (a link to `/etc` followed by a write "through" it), and recreating devices/FIFOs is rarely what a data pipeline wants. Writing the link's *target bytes* as a regular file (tar's `extractfile` behaviour) would silently duplicate/leak data. Skipping is the safe, predictable choice; `is_special` on the inspect report tells you they exist.
+- **Escape hatch:** Use stdlib `tarfile` with your own `filter=` if you genuinely need links recreated.
+
+### Nested archives beyond `max_depth` are left on disk, not treated as an error
+- **Concern:** With `recursive=True` and a chain deeper than `max_depth`, the deepest container is written but not unpacked; it appears in `skipped_nested` rather than raising.
+- **Decision:** Stop descending at the limit and record the un-unpacked container; do not abort the whole extraction.
+- **Rationale:** Depth is a structural bound, not a security emergency like the byte/file caps — everything up to the limit is legitimately extracted, and aborting would discard that work. The container is still on disk for manual handling. (The byte and file caps *do* raise, because exceeding them means active abuse in progress.)
+- **Escape hatch:** Raise `max_depth`, or re-run extraction on each path in `skipped_nested`.
 
 ### Absolute member paths are re-rooted, not rejected
 - **Concern:** A member named `/etc/passwd` is extracted to `<dest>/etc/passwd` rather than skipped as unsafe.

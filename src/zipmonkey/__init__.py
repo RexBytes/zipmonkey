@@ -6,10 +6,12 @@ Public API (import directly from ``zipmonkey``):
 * :func:`inspect` — summarise an archive without extracting.
 * :func:`extract` — one-shot extraction with filtering/flattening/recursion.
 * :func:`walk_typed` — stream extracted files tagged for dispatch.
-* :func:`detect_type` — magic-byte file-type detection.
+* :func:`detect_type` / :func:`is_archive_type` / :func:`category_for` —
+  magic-byte file-type detection and dispatch bucketing.
 * :func:`is_os_artifact` — OS-junk member predicate.
 * Result types: :class:`ArchiveEntry`, :class:`InspectReport`,
   :class:`ExtractResult`, :class:`TypedFile`.
+* Exceptions: :class:`UnsupportedArchiveError`, :class:`ArchiveLimitError`.
 
 See ``LIMITATIONS.md`` for deliberate design tradeoffs.
 """
@@ -22,7 +24,7 @@ from .detect import category_for, detect_type, is_archive_type
 from .extract import extract
 from .inspect import inspect
 from .models import ArchiveEntry, ExtractResult, InspectReport, TypedFile
-from .safety import ArchiveLimitError, UnsafePathError
+from .safety import ArchiveLimitError
 from .walk import walk_typed
 
 __version__ = "0.1.0"
@@ -42,7 +44,6 @@ __all__ = [
     "ExtractResult",
     "TypedFile",
     "UnsupportedArchiveError",
-    "UnsafePathError",
     "ArchiveLimitError",
     "__version__",
 ]

@@ -9,6 +9,8 @@ bytes) and falls back to the filename only when the bytes are ambiguous
 
 from __future__ import annotations
 
+import codecs
+
 # (offset, signature, type-label). Order matters only for human readability;
 # the matcher checks every entry and the most specific wins by construction
 # because signatures do not overlap at the same offset.
@@ -53,7 +55,7 @@ _EXT_TYPES: dict[str, str] = {
 # share a single magic number with their generic container.
 _ZIP_OFFICE: dict[str, str] = {
     ".xlsx": "xlsx",
-    ".xlsm": "xlsx",
+    ".xlsm": "xlsm",
     ".docx": "docx",
     ".pptx": "pptx",
 }
@@ -86,10 +88,14 @@ _ARCHIVE_TYPES = frozenset(
 
 
 def _extension(filename: str | None) -> str:
-    """Return the lowercased final extension of ``filename`` (incl. dot)."""
+    """Return the lowercased final extension of ``filename`` (incl. dot).
+
+    Trailing dots are stripped first, so ``"report.xlsx."`` yields ``".xlsx"``
+    rather than ``"."``.
+    """
     if not filename:
         return ""
-    name = filename.replace("\\", "/").rsplit("/", 1)[-1]
+    name = filename.replace("\\", "/").rsplit("/", 1)[-1].rstrip(".")
     dot = name.rfind(".")
     if dot <= 0:  # no dot, or dotfile like ".bashrc"
         return ""
@@ -99,16 +105,21 @@ def _extension(filename: str | None) -> str:
 def _looks_textual(data: bytes) -> bool:
     """Heuristic: True if ``data`` looks like text rather than binary.
 
-    A NUL byte in the sample is treated as a hard binary signal. Otherwise the
-    sample must decode cleanly as UTF-8 to count as textual. Empty input is
-    not textual (there is nothing to classify).
+    A NUL byte in the sample is treated as a hard binary signal (so UTF-16,
+    which is full of NULs, reads as non-textual). Otherwise the sample must
+    decode as UTF-8 — using an *incremental* decoder so that a multi-byte
+    character split across the end of a fixed-size sample window does not cause
+    a false "binary" verdict. Genuinely invalid bytes still fail. Empty input
+    is not textual (there is nothing to classify).
     """
     if not data:
         return False
     if b"\x00" in data:
         return False
+    decoder = codecs.getincrementaldecoder("utf-8")()
     try:
-        data.decode("utf-8")
+        # final=False tolerates a trailing partial multi-byte sequence.
+        decoder.decode(data, False)
     except UnicodeDecodeError:
         return False
     return True
@@ -135,9 +146,10 @@ def detect_type(data: bytes, *, filename: str | None = None) -> str:
     them requires opening the stream, which is the job of the archive layer.
 
     Args:
-        data: The file's leading bytes. As few as 512 bytes is enough for
-            every signature except none; more is harmless. May be empty, in
-            which case detection relies entirely on ``filename``.
+        data: The file's leading bytes. 262 bytes is enough to match every
+            signature (the tar magic ends at offset 262); more is harmless and
+            improves the textual heuristic. May be empty, in which case
+            detection relies entirely on ``filename``.
         filename: Optional name used to refine container types and to classify
             extension-only formats. Path separators are tolerated.
 
