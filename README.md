@@ -63,6 +63,14 @@ for tf in zipmonkey.walk_typed("bundle.zip", "out"):
 ZIP, tar, tar.gz, tar.bz2, tar.xz, standalone gzip/bzip2/xz files, plus 7z and
 rar when the optional extras are installed.
 
+> **Streaming-safety note.** The decompression-bomb caps are enforced *while
+> streaming* for the stdlib-backed formats (ZIP/tar/gzip/bzip2/xz) and rar. The
+> optional **7z** backend materialises each member in memory before writing
+> (py7zr has no streaming API); a declared-size preflight rejects oversized
+> members before decompression, but peak memory for an honestly-declared large
+> 7z member is proportional to its size. Apply a small `max_total_bytes` (or
+> your own preflight) for untrusted large 7z archives. See `LIMITATIONS.md`.
+
 ## CLI
 
 ```bash

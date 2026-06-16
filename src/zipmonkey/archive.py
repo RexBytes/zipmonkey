@@ -62,6 +62,12 @@ class UnsupportedArchiveError(ValueError):
 class _Backend:
     format: str
 
+    #: Whether ``open_stream`` returns a genuinely incremental stream that does
+    #: not materialise the whole member in memory. When False, the extraction
+    #: layer preflights each member's declared size against ``max_total_bytes``
+    #: before reading it, since the chunked write cannot bound peak memory.
+    streaming: bool = True
+
     def entries(self) -> list[ArchiveEntry]:  # pragma: no cover - interface
         raise NotImplementedError
 
@@ -72,6 +78,15 @@ class _Backend:
         raise NotImplementedError
 
     def open_stream(self, name: str) -> BinaryIO | None:  # pragma: no cover
+        """Return a readable binary stream for ``name`` (or ``None`` for dirs).
+
+        Contract: implementations should return a stream that reads
+        incrementally, so callers can bound memory by reading in chunks. A
+        backend that cannot stream (its library only exposes whole-member
+        decompression) must set ``streaming = False`` so the extraction layer
+        applies a declared-size preflight instead of relying on the chunked
+        write to bound memory.
+        """
         raise NotImplementedError
 
     def close(self) -> None:  # pragma: no cover - interface
@@ -240,6 +255,10 @@ class _SingleFileBackend(_Backend):
 
 class _SevenZipBackend(_Backend):
     format = "7z"
+    # py7zr exposes only whole-member decompression (read() -> BytesIO), so this
+    # backend cannot stream; the extraction layer preflights declared sizes and
+    # the limitation is documented in LIMITATIONS.md.
+    streaming = False
 
     def __init__(self, path: Path, password: bytes | None) -> None:
         try:
@@ -814,6 +833,17 @@ class Archive:
             if not ctx.overwrite and target.exists():
                 result.skipped_existing.append(e.name)
                 continue
+
+            # Non-streaming backends (7z) materialise the whole member before
+            # the chunked write can count it, so preflight the *declared*
+            # uncompressed size against the budget to reject oversized members
+            # before any decompression happens.
+            if not backend.streaming and ctx.max_total_bytes > 0:
+                check_total_bytes(
+                    ctx.total_bytes + e.size,
+                    ctx.max_total_bytes,
+                    partial_result=result,
+                )
 
             status = self._write_member(backend, e.name, target, ctx, result)
             if status == "collision":

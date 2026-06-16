@@ -46,6 +46,12 @@ describes only the current library.
 - **Rationale:** gzip stores only a mod-2³² uncompressed size in its trailer (wrong above 4 GiB) and bzip2 stores none, so there is no portable, trustworthy size to read cheaply. A streaming count is memory-safe (it never materialises the payload — that bomb is already closed), and inspection is an opt-in operation a caller chooses to run. The byte cap belongs to `extract`, which is where untrusted bulk extraction happens.
 - **Escape hatch:** Skip inspection and stream the member yourself via `Archive.open_member`, or `os.path.getsize` the compressed file if only the on-disk size matters.
 
+### 7z members are materialised in memory, not streamed
+- **Concern:** Unlike ZIP/tar/gzip/bzip2/xz (which stream during extraction and enforce `max_total_bytes` chunk-by-chunk), the optional 7z backend reads each member fully into memory before writing, so peak memory is proportional to one member's uncompressed size; `inspect(detect_types=True)` likewise materialises each 7z member to classify it.
+- **Decision:** Accept whole-member materialisation for 7z and guard it with a *declared-size preflight* (the member's header size is checked against `max_total_bytes` before any decompression), plus the `_Backend.streaming = False` flag.
+- **Rationale:** `py7zr` exposes only whole-member decompression (`read()` returns a `BytesIO`); there is no public chunked/callback API to stream against. The preflight rejects oversized members before they are decompressed, closing the declared-bomb hole; the residual cost is in-memory size for an *honestly-declared* large member, which only affects callers who opt into 7z. Core stdlib formats are unaffected.
+- **Escape hatch:** For untrusted/large 7z, set a small `max_total_bytes`, pass `detect_types=False` to `inspect`, or extract members individually with your own preflight via `Archive.entries()` + `Archive.open_member`.
+
 ### ZIP AES encryption is unsupported
 - **Concern:** A password-protected ZIP using WinZip AES fails to read even with the correct password.
 - **Decision:** Support only what stdlib `zipfile` supports (legacy ZipCrypto).
