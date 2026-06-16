@@ -52,7 +52,7 @@ for tf in zipmonkey.walk_typed("bundle.zip", "out"):
 ### What it handles for you
 
 - Strips `__MACOSX/`, `.DS_Store`, AppleDouble `._*`, `Thumbs.db`, `desktop.ini`.
-- Detects format by **magic bytes**, not extension (a mislabelled archive still opens).
+- Detects **archive formats by magic bytes** (a mislabelled archive still opens), with extension fallback for ambiguous document/text types (CSV, JSON, xlsx — see `LIMITATIONS.md`).
 - Unpacks **nested** archives (zip-in-zip, tar.gz-in-zip) with depth and size caps.
 - Skips **path-traversal** (`..`) members; re-roots absolute paths under the destination.
 - **Flattens** to one directory, renaming basename collisions (`name (1).ext`).

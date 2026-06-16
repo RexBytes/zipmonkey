@@ -37,7 +37,8 @@ from .safety import (
     safe_target,
 )
 
-_PEEK_BYTES = 520  # enough for every magic signature (tar lives at 257)
+_PEEK_BYTES = 520  # 262 suffices for signatures (tar magic ends at 262); the
+# extra bytes sharpen the textual UTF-8 heuristic in detect_type.
 _CHUNK = 1 << 20  # 1 MiB streaming chunk
 
 # Exception types that mean "this stream is not the (compressed) archive we
@@ -163,6 +164,11 @@ class _TarBackend(_Backend):
 
     def read(self, name: str) -> bytes:
         member = self._members[name]
+        # Only regular files have readable content. extractfile() would resolve
+        # a hard/soft link to its TARGET's bytes, contradicting the documented
+        # "special members read as empty" contract, so guard on isfile().
+        if not member.isfile():
+            return b""
         fh = self._tf.extractfile(member)
         if fh is None:
             return b""
@@ -173,6 +179,8 @@ class _TarBackend(_Backend):
 
     def peek(self, name: str, n: int) -> bytes:
         member = self._members[name]
+        if not member.isfile():
+            return b""
         try:
             fh = self._tf.extractfile(member)
         except KeyError:
@@ -186,6 +194,8 @@ class _TarBackend(_Backend):
 
     def open_stream(self, name: str) -> BinaryIO | None:
         member = self._members[name]
+        if not member.isfile():
+            return None
         return self._tf.extractfile(member)  # type: ignore[return-value]
 
     def close(self) -> None:

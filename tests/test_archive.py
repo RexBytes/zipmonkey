@@ -546,6 +546,32 @@ def test_tar_symlink_marked_special_in_inspect(tmp_path):
     assert target.is_special is False
 
 
+def test_tar_hardlink_reads_as_empty(tmp_path):
+    # read()/open_member must honour the "special members are empty" contract
+    # rather than resolving a hardlink to its target's bytes.
+    t = tmp_path / "hard.tar"
+    with tarfile.open(t, "w") as tf:
+        data = b"secret"
+        ti = tarfile.TarInfo("real.txt")
+        ti.size = len(data)
+        tf.addfile(ti, io.BytesIO(data))
+        ln = tarfile.TarInfo("hard.txt")
+        ln.type = tarfile.LNKTYPE
+        ln.linkname = "real.txt"
+        tf.addfile(ln)
+    with zipmonkey.open(t) as arc:
+        assert arc.read("hard.txt") == b""
+        with arc.open_member("hard.txt") as fh:
+            assert fh.read() == b""
+        assert arc.read("real.txt") == b"secret"
+    rep = zipmonkey.inspect(t)
+    hard = next(e for e in rep.entries if e.name == "hard.txt")
+    assert hard.is_special is True
+    # And extraction skips it.
+    res = zipmonkey.extract(t, tmp_path / "out")
+    assert "hard.txt" in res.skipped_links
+
+
 def test_tar_with_unresolvable_symlink_does_not_crash(tmp_path):
     t = tmp_path / "bad.tar"
     with tarfile.open(t, "w") as tf:
