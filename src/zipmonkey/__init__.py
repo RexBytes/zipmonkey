@@ -11,16 +11,18 @@ Public API (import directly from ``zipmonkey``):
 * :func:`is_os_artifact` — OS-junk member predicate.
 * Result types: :class:`ArchiveEntry`, :class:`InspectReport`,
   :class:`ExtractResult`, :class:`TypedFile`.
-* Exceptions: :class:`UnsupportedArchiveError`, :class:`ArchiveLimitError`.
+* Exceptions: :class:`UnsupportedArchiveError`, :class:`ArchiveReadError`,
+  :class:`ArchiveLimitError`.
 
 See ``LIMITATIONS.md`` for deliberate design tradeoffs.
 """
 
 from __future__ import annotations
 
-from importlib.metadata import PackageNotFoundError, version as _pkg_version
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _pkg_version
 
-from .archive import Archive, UnsupportedArchiveError, open
+from .archive import Archive, ArchiveReadError, UnsupportedArchiveError, open
 from .artifacts import is_os_artifact
 from .detect import category_for, detect_type, is_archive_type
 from .extract import extract
@@ -50,6 +52,7 @@ __all__ = [
     "ExtractResult",
     "TypedFile",
     "UnsupportedArchiveError",
+    "ArchiveReadError",
     "ArchiveLimitError",
     "__version__",
 ]

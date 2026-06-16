@@ -27,7 +27,13 @@ dependencies = []
 [project.optional-dependencies]
 sevenzip = ["py7zr>=0.20"]
 rar = ["rarfile>=4.0"]
-dev = ["pytest>=7.0", "pytest-cov", "hypothesis>=6.0"]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov",
+    "hypothesis>=6.0",
+    "ruff>=0.5",
+    "mypy>=1.0",
+]
 
 [project.scripts]
 zipmonkey = "zipmonkey.cli:main"
@@ -42,3 +48,15 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "W"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+files = ["src"]

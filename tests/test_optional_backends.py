@@ -16,15 +16,14 @@ import pytest
 
 import zipmonkey
 from zipmonkey.archive import (
+    UnsupportedArchiveError,
     _RarBackend,
     _SevenZipBackend,
     _SingleFileBackend,
     _TarBackend,
     _ZipBackend,
-    UnsupportedArchiveError,
 )
 from zipmonkey.models import ArchiveEntry
-
 
 # -- backend streaming contract (no optional deps required) ----------------- #
 

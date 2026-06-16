@@ -110,6 +110,26 @@ def test_cli_bad_archive_returns_1(tmp_path, capsys):
     assert rc == 1
 
 
+def test_cli_wrong_password_returns_1(tmp_path, capsys):
+    import shutil
+    import subprocess
+
+    if shutil.which("zip") is None:  # pragma: no cover - env dependent
+        pytest.skip("`zip` CLI not available to build an encrypted fixture")
+    (tmp_path / "s.txt").write_bytes(b"classified")
+    enc = tmp_path / "secret.zip"
+    subprocess.run(
+        ["zip", "-j", "-P", "hunter2", str(enc), str(tmp_path / "s.txt")],
+        check=True,
+        capture_output=True,
+    )
+    # Wrong password must produce a friendly error + exit 1, not a traceback.
+    rc = main(["inspect", str(enc), "--password", "WRONG"])
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "error:" in err
+
+
 def test_cli_corrupt_zip_returns_1(tmp_path, capsys):
     bad = tmp_path / "bad.zip"
     bad.write_bytes(b"PK\x03\x04 corrupt not a real zip")

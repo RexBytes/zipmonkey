@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  lint:
+    name: lint + type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: mypy
+
+  optional-backends:
+    name: optional backends (7z/rar)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # rarfile shells out to `unrar`/`bsdtar` at runtime for real .rar files.
+      - run: sudo apt-get update && sudo apt-get install -y libarchive-tools
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev,sevenzip,rar]"
+      # With py7zr/rarfile present the optional-backend tests run instead of skip.
+      - run: python -m pytest -q tests/test_optional_backends.py -v

@@ -66,7 +66,7 @@ def test_zip_java_containers_are_leaves(name, expected):
 
 def test_utf8_multibyte_split_at_sample_boundary_is_text():
     # A 3-byte euro sign cut after its first byte must NOT read as binary.
-    sample = b"x" * 519 + "€".encode("utf-8")[:1]
+    sample = b"x" * 519 + "€".encode()[:1]
     assert detect_type(sample) == "text"
 
 

@@ -115,9 +115,10 @@ zipmonkey is built to handle untrusted/hostile **archives** safely. For that:
 
 ## Using with AI assistants
 
-This package ships a `SKILL.md` in its repo root with an LLM-oriented decision
-tree, worked examples, and a "don't" list. See `LIMITATIONS.md` for deliberate
-design tradeoffs (e.g. why tar archives show a `0.00` compression ratio).
+This repository includes a `SKILL.md` at its root (also bundled in the sdist via
+`MANIFEST.in`) with an LLM-oriented decision tree, worked examples, and a
+"don't" list. See `LIMITATIONS.md` for deliberate design tradeoffs (e.g. why tar
+archives show a `0.00` compression ratio).
 
 ## License
 
