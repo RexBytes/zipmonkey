@@ -95,6 +95,24 @@ Extracted files usually need more processing — dispatch on `TypedFile.category
 - `pdf` -> [`pdfmonkey`](https://pypi.org/project/pdfmonkey/)
 - `excel` -> [`xldetect`](https://github.com/RexBytes/xldetect) + [`xlfilldown`](https://pypi.org/project/xlfilldown/)
 
+## Security model
+
+zipmonkey is built to handle untrusted/hostile **archives** safely. For that:
+
+- **Use `extract()` for untrusted input.** It streams under `max_total_bytes`,
+  caps the file count (`max_files`), bounds nesting (`max_depth`), strips OS
+  junk, skips path-traversal members and symlinks/devices, and resolves
+  symlinked destination prefixes. `read()` and `open_member()` are convenience
+  APIs that return whole members and do **not** apply these caps — use them
+  only on trusted or already-bounded members.
+- **Optional 7z** materialises members in memory (py7zr has no streaming API),
+  guarded by a declared-size preflight. Apply a small `max_total_bytes` for
+  untrusted large 7z.
+- **Not race-proof against a hostile *filesystem*.** Path checks assume `dest`
+  is a directory only you write to (extract into a fresh private dir). The
+  threat model is malicious archives, not another process mutating `dest`
+  mid-extraction. See `LIMITATIONS.md`.
+
 ## Using with AI assistants
 
 This package ships a `SKILL.md` in its repo root with an LLM-oriented decision
