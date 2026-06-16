@@ -15,6 +15,7 @@ import fnmatch
 import gzip
 import lzma
 import shutil
+import stat
 import tarfile
 import tempfile
 import zipfile
@@ -104,6 +105,11 @@ class _ZipBackend(_Backend):
     def entries(self) -> list[ArchiveEntry]:
         out: list[ArchiveEntry] = []
         for info in self._zf.infolist():
+            # ZIP stores the Unix mode in the high 16 bits of external_attr;
+            # a symlink there must be treated as special (its body is the link
+            # target text), not materialised as a regular file.
+            mode = info.external_attr >> 16
+            is_link = stat.S_ISLNK(mode) if mode else False
             out.append(
                 ArchiveEntry(
                     name=info.filename,
@@ -111,6 +117,7 @@ class _ZipBackend(_Backend):
                     compressed_size=info.compress_size,
                     is_dir=info.is_dir(),
                     is_artifact=is_os_artifact(info.filename),
+                    is_special=is_link,
                 )
             )
         return out
@@ -772,6 +779,10 @@ class Archive:
             dest = tmp
         dest = Path(dest)
         dest.mkdir(parents=True, exist_ok=True)
+        # Resolve to an absolute, symlink-free path so every path in the
+        # ExtractResult (dest, extracted, nested_extracted) is absolute, as the
+        # model documents — even when the caller passed a relative dest.
+        dest = dest.resolve()
 
         ctx = _Ctx(
             max_total_bytes=max_total_bytes,
@@ -819,7 +830,9 @@ class Archive:
             is_arc = False
             if recursive:
                 head = backend.peek(e.name, _PEEK_BYTES)
-                is_arc = is_archive_type(detect_type(head))
+                # Pass the filename so zip-container documents (xlsx/docx/jar/…)
+                # are classified as leaves, not unpacked as raw zips.
+                is_arc = is_archive_type(detect_type(head, filename=e.name))
 
             # The include/exclude filter applies to leaf files only; archive
             # containers are always traversed so a leaf filter reaches inside.
@@ -835,6 +848,12 @@ class Archive:
                 result.skipped_existing.append(e.name)
                 continue
 
+            # Preflight caps BEFORE writing so the over-limit member is never
+            # materialised on disk. file_count is only incremented after a
+            # successful (non-collision) write, so the prospective +1 is exact.
+            check_file_count(
+                ctx.file_count + 1, ctx.max_files, partial_result=result
+            )
             # Non-streaming backends (7z) materialise the whole member before
             # the chunked write can count it, so preflight the *declared*
             # uncompressed size against the budget to reject oversized members
@@ -852,7 +871,6 @@ class Archive:
                 continue
 
             ctx.file_count += 1
-            check_file_count(ctx.file_count, ctx.max_files, partial_result=result)
 
             if is_arc:
                 if ctx.max_depth <= 0 or depth + 1 <= ctx.max_depth:

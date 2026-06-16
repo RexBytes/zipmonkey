@@ -73,6 +73,9 @@ rar when the optional extras are installed.
 >
 > For untrusted input prefer `extract()` (streamed, capped) over `read()` /
 > `open_member()`, which return whole members and do **not** apply the caps.
+> Note `inspect()` on a standalone `.gz`/`.bz2`/`.xz` streams the whole payload
+> to report its uncompressed size (memory-safe, but not free) — see
+> `LIMITATIONS.md`.
 
 ## CLI
 

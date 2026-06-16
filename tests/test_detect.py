@@ -54,6 +54,16 @@ def test_xlsm_is_its_own_type():
     assert category_for("xlsm") == "excel"
 
 
+@pytest.mark.parametrize(
+    "name,expected",
+    [("app.jar", "jar"), ("web.war", "war"), ("ent.ear", "ear"), ("a.apk", "apk")],
+)
+def test_zip_java_containers_are_leaves(name, expected):
+    # Java/Android zip containers must classify as leaves, not raw zips.
+    assert detect_type(b"PK\x03\x04", filename=name) == expected
+    assert is_archive_type(expected) is False
+
+
 def test_utf8_multibyte_split_at_sample_boundary_is_text():
     # A 3-byte euro sign cut after its first byte must NOT read as binary.
     sample = b"x" * 519 + "€".encode("utf-8")[:1]
