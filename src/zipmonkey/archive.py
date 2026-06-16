@@ -31,8 +31,10 @@ from .models import ArchiveEntry, ExtractResult, InspectReport, TypedFile
 from .safety import (
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_FILES,
+    DEFAULT_MAX_MEMBER_BYTES,
     DEFAULT_MAX_TOTAL_BYTES,
     check_file_count,
+    check_member_bytes,
     check_total_bytes,
     safe_target,
 )
@@ -363,6 +365,29 @@ class _RarBackend(_Backend):
         self._rf = rarfile.RarFile(path)
         if password is not None:
             self._rf.setpassword(password.decode("utf-8"))
+        self._specials = {
+            info.filename
+            for info in self._rf.infolist()
+            if self._rar_special(info)
+        }
+
+    @staticmethod
+    def _rar_special(info: object) -> bool:
+        """True for RAR symlinks / redirects (mark special, like tar/zip links).
+
+        RAR5 records symlinks and other redirects in ``file_redir``; older
+        ``rarfile`` versions expose ``is_symlink()``. Probed defensively so the
+        backend works across versions.
+        """
+        if getattr(info, "file_redir", None):
+            return True
+        is_symlink = getattr(info, "is_symlink", None)
+        if callable(is_symlink):
+            try:
+                return bool(is_symlink())
+            except Exception:  # noqa: BLE001 - backend version differences
+                return False
+        return False
 
     def entries(self) -> list[ArchiveEntry]:
         out: list[ArchiveEntry] = []
@@ -374,18 +399,25 @@ class _RarBackend(_Backend):
                     compressed_size=getattr(info, "compress_size", 0) or 0,
                     is_dir=info.isdir(),
                     is_artifact=is_os_artifact(info.filename),
+                    is_special=self._rar_special(info),
                 )
             )
         return out
 
     def read(self, name: str) -> bytes:
+        if name in self._specials:
+            return b""
         return self._rf.read(name)
 
     def peek(self, name: str, n: int) -> bytes:
+        if name in self._specials:
+            return b""
         with self._rf.open(name) as fh:
             return fh.read(n)
 
-    def open_stream(self, name: str) -> BinaryIO:
+    def open_stream(self, name: str) -> BinaryIO | None:
+        if name in self._specials:
+            return None
         return self._rf.open(name)  # type: ignore[return-value]
 
     def close(self) -> None:
@@ -588,6 +620,7 @@ class _Ctx:
 
     max_total_bytes: int
     max_files: int
+    max_member_bytes: int
     max_depth: int
     clean_artifacts: bool
     overwrite: bool
@@ -778,6 +811,7 @@ class Archive:
         max_depth: int = DEFAULT_MAX_DEPTH,
         max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
         max_files: int = DEFAULT_MAX_FILES,
+        max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES,
     ) -> ExtractResult:
         """Extract members to ``dest`` with filtering, flattening, recursion.
 
@@ -818,6 +852,11 @@ class Archive:
                 ``ExtractResult.written_count`` rather than ``count`` (which is
                 leaf-only). Bounds fan-out bombs. Exceeding it raises
                 ``ArchiveLimitError``. ``<= 0`` disables.
+            max_member_bytes: Per-member cap on declared uncompressed size,
+                checked before the member is read. Most valuable for the
+                non-streaming 7z backend (it bounds peak memory, which a single
+                member would otherwise dominate); applies to every backend.
+                Exceeding it raises ``ArchiveLimitError``. ``<= 0`` disables.
 
         Returns:
             An :class:`~zipmonkey.models.ExtractResult` recording what was
@@ -838,6 +877,7 @@ class Archive:
         ctx = _Ctx(
             max_total_bytes=max_total_bytes,
             max_files=max_files,
+            max_member_bytes=max_member_bytes,
             max_depth=max_depth,
             clean_artifacts=clean_artifacts,
             overwrite=overwrite,
@@ -904,6 +944,10 @@ class Archive:
             # successful (non-collision) write, so the prospective +1 is exact.
             check_file_count(
                 ctx.file_count + 1, ctx.max_files, partial_result=result
+            )
+            # Per-member size cap (declared size, checked before reading).
+            check_member_bytes(
+                e.size, ctx.max_member_bytes, e.name, partial_result=result
             )
             # Non-streaming backends (7z) materialise the whole member before
             # the chunked write can count it, so preflight the *declared*

@@ -16,6 +16,7 @@ from .models import ArchiveEntry
 from .safety import (
     DEFAULT_MAX_DEPTH,
     DEFAULT_MAX_FILES,
+    DEFAULT_MAX_MEMBER_BYTES,
     DEFAULT_MAX_TOTAL_BYTES,
     ArchiveLimitError,
 )
@@ -122,6 +123,7 @@ def _cmd_extract(args: argparse.Namespace) -> int:
             max_depth=args.max_depth,
             max_total_bytes=args.max_total_bytes,
             max_files=args.max_files,
+            max_member_bytes=args.max_member_bytes,
         )
     print(f"extracted {result.count} file(s) to {result.dest}")
     if result.skipped_artifacts:
@@ -228,6 +230,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_FILES,
         help="cap on total files written (fan-out guard; 0 disables)",
+    )
+    p_extract.add_argument(
+        "--max-member-bytes",
+        type=int,
+        default=DEFAULT_MAX_MEMBER_BYTES,
+        help="per-member uncompressed size cap (esp. for 7z; 0 disables)",
     )
     p_extract.add_argument(
         "-v",

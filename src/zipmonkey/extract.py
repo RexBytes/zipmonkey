@@ -13,7 +13,12 @@ from pathlib import Path
 
 from .archive import Archive
 from .models import ExtractResult
-from .safety import DEFAULT_MAX_DEPTH, DEFAULT_MAX_FILES, DEFAULT_MAX_TOTAL_BYTES
+from .safety import (
+    DEFAULT_MAX_DEPTH,
+    DEFAULT_MAX_FILES,
+    DEFAULT_MAX_MEMBER_BYTES,
+    DEFAULT_MAX_TOTAL_BYTES,
+)
 
 
 def extract(
@@ -30,6 +35,7 @@ def extract(
     max_depth: int = DEFAULT_MAX_DEPTH,
     max_total_bytes: int = DEFAULT_MAX_TOTAL_BYTES,
     max_files: int = DEFAULT_MAX_FILES,
+    max_member_bytes: int = DEFAULT_MAX_MEMBER_BYTES,
 ) -> ExtractResult:
     """Extract ``path`` into ``dest``.
 
@@ -53,4 +59,5 @@ def extract(
             max_depth=max_depth,
             max_total_bytes=max_total_bytes,
             max_files=max_files,
+            max_member_bytes=max_member_bytes,
         )

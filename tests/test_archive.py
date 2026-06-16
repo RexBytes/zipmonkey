@@ -408,6 +408,27 @@ def test_byte_limit_enforced_mid_stream(tmp_path):
     assert not (tmp_path / "out" / "big.bin").exists()
 
 
+def test_max_member_bytes_rejects_oversized(tmp_path):
+    z = tmp_path / "big.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("small.txt", b"x" * 10)
+        zf.writestr("big.txt", b"y" * 100)
+    out = tmp_path / "out"
+    with pytest.raises(zipmonkey.ArchiveLimitError) as exc:
+        zipmonkey.extract(z, out, max_member_bytes=50)
+    # The oversized member is rejected before writing.
+    assert not (out / "big.txt").exists()
+    assert exc.value.partial_result is not None
+
+
+def test_max_member_bytes_zero_disables(tmp_path):
+    z = tmp_path / "ok.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("big.txt", b"y" * 100)
+    res = zipmonkey.extract(z, tmp_path / "out", max_member_bytes=0)
+    assert res.count == 1
+
+
 def test_file_count_limit_enforced(tmp_path):
     z = tmp_path / "many.zip"
     with zipfile.ZipFile(z, "w") as zf:
