@@ -70,6 +70,9 @@ rar when the optional extras are installed.
 > members before decompression, but peak memory for an honestly-declared large
 > 7z member is proportional to its size. Apply a small `max_total_bytes` (or
 > your own preflight) for untrusted large 7z archives. See `LIMITATIONS.md`.
+>
+> For untrusted input prefer `extract()` (streamed, capped) over `read()` /
+> `open_member()`, which return whole members and do **not** apply the caps.
 
 ## CLI
 

@@ -165,6 +165,30 @@ def test_inspect_real_compression_ratio(tmp_path):
     assert 0.0 < rep.compression_ratio < 1.0
 
 
+def test_extract_cli_verbose_reports_skip_buckets(tmp_path, capsys):
+    z = tmp_path / "v.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("keep.csv", b"1")
+        zf.writestr("drop.log", b"2")
+    rc = main(
+        ["extract", str(z), str(tmp_path / "o"), "--exclude", "*.log", "-v"]
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "skipped 1 filtered: drop.log" in out
+
+
+def test_extract_cli_no_verbose_omits_skip_buckets(tmp_path, capsys):
+    z = tmp_path / "v.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("keep.csv", b"1")
+        zf.writestr("drop.log", b"2")
+    rc = main(["extract", str(z), str(tmp_path / "o"), "--exclude", "*.log"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "filtered" not in out
+
+
 def test_extract_cli_max_files_limit(tmp_path, capsys):
     z = tmp_path / "m.zip"
     with zipfile.ZipFile(z, "w") as zf:

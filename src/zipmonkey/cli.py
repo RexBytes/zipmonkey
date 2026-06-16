@@ -126,6 +126,17 @@ def _cmd_extract(args: argparse.Namespace) -> int:
         print(f"skipped {len(result.skipped_unsafe)} unsafe path(s)")
     if result.nested_extracted:
         print(f"unpacked {len(result.nested_extracted)} nested archive(s)")
+    if args.verbose:
+        # Surface every skip bucket so nothing is silently dropped.
+        for label, bucket in (
+            ("filtered", result.skipped_filtered),
+            ("collision", result.skipped_collisions),
+            ("existing", result.skipped_existing),
+            ("link/special", result.skipped_links),
+            ("over-depth nested", result.skipped_nested),
+        ):
+            if bucket:
+                print(f"skipped {len(bucket)} {label}: {', '.join(bucket)}")
     return 0
 
 
@@ -202,6 +213,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_MAX_FILES,
         help="cap on total files written (fan-out guard; 0 disables)",
+    )
+    p_extract.add_argument(
+        "-v",
+        "--verbose",
+        action="store_true",
+        help="report every skip bucket (filtered, collisions, existing, ...)",
     )
     _add_password(p_extract)
     p_extract.set_defaults(func=_cmd_extract)
