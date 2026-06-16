@@ -606,11 +606,36 @@ class Archive:
         return [e.name for e in self._backend.entries()]
 
     def read(self, name: str) -> bytes:
-        """Read one member's uncompressed bytes by name.
+        """Read one member's uncompressed bytes by name, into memory.
+
+        A convenience for trusted or small members: the entire uncompressed
+        payload is materialised, so it does **not** honour the extraction byte
+        caps. For large or untrusted members use :meth:`open_member` and read
+        in bounded chunks, or :meth:`extract` (which streams under a cap).
 
         Returns ``b""`` for a directory or special (link/device) member.
         """
         return self._backend.read(name)
+
+    def open_member(self, name: str) -> BinaryIO:
+        """Return a readable binary stream for one member (caller closes it).
+
+        The streaming counterpart to :meth:`read`: read in bounded chunks
+        instead of materialising the whole payload, e.g.::
+
+            with arc.open_member("big.bin") as fh:
+                while chunk := fh.read(1 << 20):
+                    ...
+
+        This raw stream is not subject to the extraction byte caps; enforce
+        your own limit while reading untrusted input.
+        """
+        stream = self._backend.open_stream(name)
+        if stream is None:  # directory / special member
+            import io
+
+            return io.BytesIO(b"")
+        return stream
 
     def inspect(self, *, detect_types: bool = True) -> InspectReport:
         """Summarise the archive without extracting it.
@@ -701,7 +726,10 @@ class Archive:
                 skipped and recorded in ``skipped_existing``.
             max_depth: Maximum nested-archive nesting depth. ``max_depth=1``
                 unpacks one level of nesting; archives beyond the limit are left
-                on disk and listed in ``skipped_nested``. ``<= 0`` disables.
+                on disk and listed in ``skipped_nested``. ``<= 0`` disables the
+                depth cap (unlimited nesting, still bounded by
+                ``max_total_bytes`` and ``max_files``) — it does not turn off
+                recursion, which is controlled by ``recursive``.
             max_total_bytes: Cap on cumulative bytes written to disk across the
                 whole operation. Enforced *while streaming*, so a single huge
                 member cannot exhaust memory. Exceeding it raises

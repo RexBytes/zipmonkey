@@ -40,6 +40,12 @@ describes only the current library.
 - **Rationale:** Tar compresses the *whole stream*, not individual members, so there is no per-member compressed size to report — the information does not exist in the format. Synthesising a plausible-looking number (e.g. prorating the stream size) would invent data the format never recorded. `ArchiveEntry.size` (uncompressed) is always accurate.
 - **Escape hatch:** For an overall figure, compare `os.path.getsize(archive)` against `InspectReport.total_size` yourself.
 
+### Inspecting a standalone gzip/bzip2/xz streams the whole payload to size it
+- **Concern:** `inspect("huge.gz")` reads the entire decompressed stream to report `total_size`, with no inspect-time byte cap — slow for very large single-file streams.
+- **Decision:** Stream-count the decompressed bytes (O(1) memory, O(n) time) to populate `ArchiveEntry.size`.
+- **Rationale:** gzip stores only a mod-2³² uncompressed size in its trailer (wrong above 4 GiB) and bzip2 stores none, so there is no portable, trustworthy size to read cheaply. A streaming count is memory-safe (it never materialises the payload — that bomb is already closed), and inspection is an opt-in operation a caller chooses to run. The byte cap belongs to `extract`, which is where untrusted bulk extraction happens.
+- **Escape hatch:** Skip inspection and stream the member yourself via `Archive.open_member`, or `os.path.getsize` the compressed file if only the on-disk size matters.
+
 ### ZIP AES encryption is unsupported
 - **Concern:** A password-protected ZIP using WinZip AES fails to read even with the correct password.
 - **Decision:** Support only what stdlib `zipfile` supports (legacy ZipCrypto).

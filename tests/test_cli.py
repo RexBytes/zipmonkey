@@ -123,6 +123,21 @@ def test_cli_requires_subcommand(capsys):
         build_parser().parse_args([])
 
 
+def test_password_accepted_after_subcommand():
+    args = build_parser().parse_args(["inspect", "a.zip", "--password", "x"])
+    assert args.password == "x"
+
+
+def test_password_accepted_before_subcommand():
+    args = build_parser().parse_args(["--password", "x", "inspect", "a.zip"])
+    assert args.password == "x"
+
+
+def test_password_default_none_either_position():
+    args = build_parser().parse_args(["inspect", "a.zip"])
+    assert args.password is None
+
+
 def test_tree_file_dir_name_clash_renders_dir(tmp_path, capsys):
     # Archive with both "foo" (file) and "foo/bar.txt": the shared prefix must
     # render as a directory, not a file with children.

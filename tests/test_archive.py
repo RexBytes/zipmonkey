@@ -310,6 +310,29 @@ def test_namelist(zip_factory):
         assert set(arc.namelist()) == {"a.txt", "b.txt"}
 
 
+def test_open_member_streams_in_chunks(zip_factory):
+    z = zip_factory("a.zip", {"big.txt": b"abcdefghij" * 100})
+    with zipmonkey.open(z) as arc:
+        with arc.open_member("big.txt") as fh:
+            collected = b""
+            while True:
+                chunk = fh.read(64)
+                if not chunk:
+                    break
+                collected += chunk
+    assert collected == b"abcdefghij" * 100
+
+
+def test_open_member_directory_returns_empty_stream(tmp_path):
+    z = tmp_path / "d.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("d/", b"")
+        zf.writestr("d/f.txt", b"hi")
+    with zipmonkey.open(z) as arc:
+        with arc.open_member("d/") as fh:
+            assert fh.read() == b""
+
+
 # -- walk_typed ------------------------------------------------------------- #
 
 
