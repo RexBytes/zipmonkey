@@ -14,22 +14,24 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 13 (3 models each: opus, sonnet, haiku) |
+| Multi-model review panels | 14 (3 models each: opus, sonnet, haiku) |
 | Confirmed findings (panels) | 22 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 10 LOW, 5 NIT |
-| Severity-weighted yield | 15 → 8 → 5.2 → 1 → 6.4 → 5 → 1 → 0 → 1 → 1 → 1.2 → 0.2 → 0 |
+| Severity-weighted yield | 15 → 8 → 5.2 → 1 → 6.4 → 5 → 1 → 0 → 1 → 1 → 1.2 → 0.2 → 0 → 0 |
 | Tests | 280 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~92% coverage. **CI green** (py7zr 1.1.0/1.1.3 matrix) |
 | Release-Readiness Score | 96.0 / 100 |
-| Convergence | two consecutive full-diversity clean panels on the shipping tree (12 NIT-only → 13 clean); confidence 1.00 |
-| Verdict | **RELEASABLE** — gates green, CI green, RRS ≥ 90, Panels 12–13 clean on the exact shipping tree |
+| Convergence | three consecutive full-diversity clean panels on the shipping tree (12 NIT-only → 13 clean → 14 clean); confidence 1.00 |
+| Verdict | **RELEASABLE** — gates green, CI green, RRS ≥ 90, Panels 12–14 clean on the exact shipping tree |
 
 > **Converged and RELEASABLE on the shipping tree.** Panel 12 (NIT-only) flagged
 > one cosmetic trailing-dot quirk in `_split_ext`; that NIT was fixed (commit
 > `cee47c7`) and **Panel 13** confirmed the fix full-diversity clean (opus +
 > sonnet 0 findings; one haiku "HIGH" dismissed as a misread whose own proposed
-> fix was a lossy regression). The earlier "RELEASABLE" after Panel 8 was on the
-> pre-consolidation tree; it then took a consolidation, a CI fix, a four-panel
-> fight with one ported feature, and a final NIT-fix confirmation to honestly
-> re-earn it — see the sections below.
+> fix was a lossy regression). **Panel 14** then re-confirmed the tree
+> unanimously clean — all three models 0 findings, the prior false HIGH explicitly
+> refuted. The earlier "RELEASABLE" after Panel 8 was on the pre-consolidation
+> tree; it then took a consolidation, a CI fix, a four-panel fight with one ported
+> feature, and two confirmation panels to honestly re-earn it — see the sections
+> below.
 
 > **Converged.** Panels 7 and 8 are two consecutive full-diversity panels with
 > nothing above LOW (Panel 8 found nothing at all from any model), so the
@@ -64,6 +66,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 12 | 1 NIT | 0.2 | Full-diversity clean on the reverted (shipping) tree; cosmetic trailing-dot NIT |
 | — | _NIT fix_ | — | `_split_ext` splits on the trailing-dot-stripped name (commit `cee47c7`) — `"file." → "file. (1)"` |
 | 13 | _none_ | 0.0 | Confirmation of the NIT fix: opus + sonnet clean; haiku HIGH dismissed (lossy proposed fix) — RELEASABLE |
+| 14 | _none_ | 0.0 | Convergence re-confirmation: all three models clean; prior false HIGH refuted; collision-candidate stress passed — RELEASABLE |
 
 ## What each panel found and how it was fixed
 
@@ -280,7 +283,7 @@ always traverse; the no-filter path is unchanged.
 > fix is small/tested, so residual risk is low — but the methodology's whole
 > point is to *measure* that, not assume it.)
 
-## Panels 10–13 — the extension feature, fought and reverted
+## Panels 10–14 — the extension feature, fought and reverted
 
 Panel 9's decoy fix introduced a sibling bug Panel 10 caught (the `flat_used`
 leak, consensus opus+sonnet, fixed). Panel 11 then found a *fourth* issue in the
@@ -309,18 +312,24 @@ the extension off the *stripped* name — **drops the trailing dot** (`"a.b (1).
 `stem + ext != basename`), a lossy regression proven by direct repro. The
 misleading comment that triggered the false positive was clarified and a multi-dot
 regression test added (`test_flatten_collision_multidot_trailing_dot_name`) —
-comment + test only, no behaviour change. Panels 12 and 13 are two consecutive
-full-diversity clean panels on the exact shipping tree.
+comment + test only, no behaviour change. **Panel 14** then re-confirmed the tree
+**unanimously clean** (all three models 0 findings): each verified the reworded
+comment is accurate and the new test pins the true lossless behaviour, and the
+prior false HIGH was explicitly refuted. The sharpest stress yet — an archive
+whose members include a *literal* collision-candidate name (`a.b.c.` ×2 plus a
+real `a.b (1).c.`) — confirmed the generated suffix bumps past it
+(`a.b (1) (1).c.` / `a.b (2).c.`) with no data loss. Panels 12, 13, and 14 are
+three consecutive full-diversity clean panels on the exact shipping tree.
 
 ## Release decision (v1.0.0) — RELEASABLE
 
 `python scripts/readiness.py` → **RELEASABLE**: all hard gates green (tests /
 ruff / mypy / no open defects), **CI green** (py7zr 1.1.0/1.1.3 matrix),
 **RRS 96.0 / 100**, **clean streak ≥ 2 at full diversity** (confidence 1.00).
-Panels 12 (NIT-only) and 13 (clean, confirming the NIT fix) are two consecutive
-full-diversity clean panels on the **exact shipping tree**; the reverted recursion
-is the Panels 1–8 code and every other component was reviewed clean across
-Panels 9–13.
+Panels 12 (NIT-only), 13 (clean, confirming the NIT fix), and 14 (unanimously
+clean) are three consecutive full-diversity clean panels on the **exact shipping
+tree**; the reverted recursion is the Panels 1–8 code and every other component
+was reviewed clean across Panels 9–14.
 
 **What the convergence signal covers:** the full ZIP, tar, and gzip/bz2/xz
 single-file surfaces, and the **7z** backend (py7zr installed and exercised for
