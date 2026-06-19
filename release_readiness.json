@@ -74,6 +74,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"LOW": 1},
       "note": "CONFIRMATION panel after the hhhw8t consolidation + CI fix (those changed converged code, so the Panels 7-8 streak was stale). haiku and sonnet found ZERO; opus found one LOW regression from the consolidation: a non-archive named like an archive (text 'decoy.zip') inside a 7z escaped include/exclude because extension-based detection presumed it a container, it failed to open, and was extracted as a leaf -- the streaming backends content-sniff and filter it. Fixed: re-apply the leaf filter when an extension-classified container fails to open, unwinding the write/budget. Also fixed (separate, before this panel): CI was red since Panel 3 on the py7zr 0.20.8 matrix leg (FileInfo.is_symlink only exists in py7zr>=1.1) -> dep bounded py7zr>=1.1,<2, CI matrix [1.1.0,1.1.3], CI now green. NOTE: the decoy fix (commit 0ebc8f9) changed code AFTER this panel, so a Panel-10 confirmation on the post-fix tree is required to honestly re-establish the clean streak."
+    },
+    {
+      "id": "10",
+      "commits": ["e294e52"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"LOW": 1},
+      "note": "CONFIRMATION of the Panel-9 decoy fix. LOW (CONSENSUS opus+sonnet, reproduced): a sibling bug in the Panel-9 fix -- _unwrite_filtered_leaf released ctx.written_targets/file_count/total_bytes but NOT the flat_used basename reservation, so in flat=True a filtered-out decoy left a stale reservation and a later legit member was spuriously renamed 'name (1)' (cosmetic, no data loss). Fixed (e294e52): release flat_used.discard(target.name) when ctx.flat. opus+sonnet both verified the unwrite accounting is otherwise fully consistent with disk (caps, depth, duplicates, streaming). haiku AND sonnet reviewed the POST-fix HEAD e294e52 and found it CLEAN; opus reviewed the pre-fix f2daea3 and its only finding was the now-fixed flat_used leak. Third consecutive fix-induced sibling in the extension-detection feature (Panel 9 decoy, Panel 10 flat_used) -- but the accounting unwind is now comprehensively covered."
     }
   ]
 }
