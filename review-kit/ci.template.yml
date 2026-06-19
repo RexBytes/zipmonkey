@@ -1,0 +1,63 @@
+# Copy to .github/workflows/ci.yml. Replace <package> and the optional-extras
+# matrix to match your project. The point: run tests/lint/type on every push,
+# and run a dedicated job that installs OPTIONAL extras across a dependency
+# version matrix so gated/optional code paths (invisible to the default suite)
+# are actually exercised.
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  test:
+    name: test (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: python -m pytest -q
+
+  lint:
+    name: lint + type-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src tests
+      - run: mypy
+
+  # Optional: only if the package has gated/optional dependencies. Run the FULL
+  # suite with the extras installed across a version matrix that straddles any
+  # known API boundary, so a dependency/API break fails CI (it is otherwise
+  # invisible — the gated tests just skip when the extra is absent).
+  optional-deps:
+    name: optional deps (<dep> ${{ matrix.dep_version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        dep_version: ["<lower-bound>", "<upper-bound>"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # - run: sudo apt-get update && sudo apt-get install -y <system-tools>
+      - run: python -m pip install --upgrade pip
+      - run: pip install -e ".[dev,<extra>]"
+      - run: pip install "<dep>==${{ matrix.dep_version }}"
+      - run: python -m pytest -q

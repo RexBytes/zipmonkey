@@ -1,0 +1,24 @@
+{
+  "_comment": "Per-project config for scripts/readiness.py. Copy to your repo root as release_readiness.json, fill available_models + signals, and append one panel object per review panel.",
+  "severity_weights": {"CRITICAL": 40, "HIGH": 10, "MEDIUM": 4, "LOW": 1, "NIT": 0.2},
+  "available_models": ["opus", "sonnet", "haiku"],
+  "tau": 2,
+  "coverage_target": 0.90,
+  "contract_coverage_estimate": 0.80,
+  "known_open_defects": 0,
+  "signals": {
+    "property_tests": {"file": "tests/test_properties.py", "needle": "hypothesis"},
+    "security": {"file": "tests/test_safety.py", "needles": ["traversal", "escape"]},
+    "docs": ["LIMITATIONS.md", "CONTRIBUTING.md", "README.md"]
+  },
+  "panels": [
+    {
+      "_example": "Append one object per panel. findings counts NEW confirmed defects by severity; an empty {} is a clean panel. models lists the distinct models that participated.",
+      "id": "A",
+      "commits": ["<fix-commit-sha>"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 2},
+      "note": "<one-line summary of what was found and fixed>"
+    }
+  ]
+}

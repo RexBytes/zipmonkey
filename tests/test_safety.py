@@ -68,6 +68,11 @@ def test_control_char_rejected(tmp_path):
     assert safe_target(tmp_path, "a\x01b.txt") is None
 
 
+def test_del_char_rejected(tmp_path):
+    # DEL (0x7F) is rejected alongside the C0 control range.
+    assert safe_target(tmp_path, "a\x7fb.txt") is None
+
+
 def test_symlinked_dest_prefix_escape_rejected(tmp_path):
     # A symlink in the existing prefix that redirects outside dest is rejected.
     outside = tmp_path / "outside"

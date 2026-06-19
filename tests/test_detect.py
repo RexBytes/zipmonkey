@@ -8,6 +8,7 @@ from zipmonkey.detect import (
     category_for,
     detect_type,
     is_archive_type,
+    looks_like_archive,
 )
 
 
@@ -165,3 +166,12 @@ def test_category_for(label, bucket):
 def test_dotfile_extension_ignored():
     # ".bashrc" has no real extension; textual content -> text.
     assert detect_type(b"export PATH=1", filename=".bashrc") == "text"
+
+
+def test_looks_like_archive_four_corners():
+    # Content-free archive-extension heuristic used for 7z nested detection.
+    assert looks_like_archive("a.7z") is True          # archive extension
+    assert looks_like_archive("a.tar.gz") is True      # compound archive
+    assert looks_like_archive("notes.txt") is False    # plain leaf
+    assert looks_like_archive("report.xlsx") is False  # zip-container doc stays a leaf
+    assert looks_like_archive("weird.7z.") is True     # trailing dot tolerated

@@ -28,7 +28,12 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .artifacts import is_os_artifact
-from .detect import category_for, detect_type, is_archive_type
+from .detect import (
+    category_for,
+    detect_type,
+    is_archive_type,
+    looks_like_archive,
+)
 from .models import ArchiveEntry, ExtractResult, InspectReport, TypedFile
 from .safety import (
     DEFAULT_MAX_DEPTH,
@@ -1047,19 +1052,24 @@ class Archive:
 
             is_arc = False
             if recursive:
-                # A non-streaming backend (7z) materialises the whole member to
-                # peek it, so enforce the per-member cap *before* peeking.
-                if not backend.streaming:
-                    check_member_bytes(
-                        e.size, ctx.max_member_bytes, e.name, partial_result=result
-                    )
-                try:
-                    head = backend.peek(e.name, _PEEK_BYTES)
-                except _READ_ERRORS as exc:
-                    raise _as_read_error(e.name, exc) from exc
-                # Pass the filename so zip-container documents (xlsx/docx/jar/…)
-                # are classified as leaves, not unpacked as raw zips.
-                is_arc = is_archive_type(detect_type(head, filename=e.name))
+                if backend.streaming:
+                    # Cheap to peek: sniff nested archives by magic bytes. Pass
+                    # the filename so zip-container documents (xlsx/docx/jar/…)
+                    # stay leaves, not unpacked as raw zips.
+                    try:
+                        head = backend.peek(e.name, _PEEK_BYTES)
+                    except _READ_ERRORS as exc:
+                        raise _as_read_error(e.name, exc) from exc
+                    is_arc = is_archive_type(detect_type(head, filename=e.name))
+                else:
+                    # Non-streaming (7z): peeking would materialise the whole
+                    # member, so detect nested archives by extension instead.
+                    # This keeps the filter/cap preflight uniform with streaming
+                    # backends — a filtered or oversized member is never
+                    # materialised just to sniff it — and the write-time caps
+                    # still bound the real reads. The tradeoff: a nested archive
+                    # with a non-archive extension is treated as a leaf.
+                    is_arc = looks_like_archive(e.name)
 
             # The include/exclude filter applies to leaf files only; archive
             # containers are always traversed so a leaf filter reaches inside.

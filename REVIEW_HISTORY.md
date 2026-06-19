@@ -199,6 +199,37 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   not a confirmed finding. This is the **second consecutive full-diversity clean
   panel**, so the clean-streak safeguard is met and the package is RELEASABLE.
 
+## Post-release consolidation (merge of the parallel `determined-darwin-hhhw8t` effort)
+
+A separate, earlier branch (`claude/determined-darwin-hhhw8t`) ran its own
+12-panel campaign over the same package. Its distinct, valuable work was merged
+onto this branch:
+
+- **Portable `review-kit/` directory** — the reusable kit (templates + a
+  config-driven `readiness.py`) as a committed subtree; inert to project tooling.
+- **`looks_like_archive()` + extension-based nested-archive detection for the
+  non-streaming 7z backend.** This **resolves the Panel-7 "recursive 7z enforces
+  `max_member_bytes` before the filter" limitation**: 7z no longer materialises a
+  member just to sniff it, so the filter and caps now behave uniformly with the
+  streaming backends. Tradeoff (documented): a nested 7z under a non-archive name
+  is treated as a leaf.
+- **Eager `dest is None` guard** in `zipmonkey.extract()` / `walk_typed()`
+  (raises a clear `TypeError` instead of deleting an auto temp dir).
+- **`safe_target` rejects DEL (0x7F)** alongside the C0 control range.
+
+Each landed with a regression test; the suite is **277 passing / 1 skipped**,
+ruff + mypy clean. *Deliberately kept ours* over hhhw8t's: the `is_special`
+docstring (ours is current; hhhw8t's was stale) and the `file_count`/`total_size`
+semantics (a design choice, not a defect). The `_SevenZipBackend.read`
+BytesIOFactory refactor (this branch) was kept over hhhw8t's temp-dir approach.
+
+> **Convergence caveat:** the clean streak below was earned by Panels 7–8 on the
+> *pre-consolidation* tree. This consolidation changed converged code (notably
+> the recursion path), so the streak is **stale for the current tree** — a
+> confirmation panel (Panel 9) is recommended before treating the merged result
+> as re-converged. Gates remain green and tests pass, but the panel signal needs
+> to be refreshed on the merged code.
+
 ## Release decision (v0.1.0)
 
 `python scripts/readiness.py` → **RELEASABLE**: all hard gates green (tests /

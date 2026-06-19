@@ -1098,3 +1098,16 @@ def test_nested_archive_inherits_password(tmp_path):
     )
     leaf = next(p for p in res.extracted if p.name == "s.txt")
     assert leaf.read_bytes() == b"classified"
+
+
+def test_extract_module_func_requires_dest(tmp_path):
+    # The convenience zipmonkey.extract()/walk_typed() refuse dest=None eagerly
+    # (the auto-cleanup temp-dir mode is only safe via the context manager,
+    # which would otherwise delete the files before the caller can use them).
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("f.txt", b"hi")
+    with pytest.raises(TypeError, match="dest is required"):
+        zipmonkey.extract(z, None)
+    with pytest.raises(TypeError, match="dest is required"):
+        list(zipmonkey.walk_typed(z, None))

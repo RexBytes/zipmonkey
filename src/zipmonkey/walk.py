@@ -30,7 +30,27 @@ def walk_typed(
 
     Yields:
         One :class:`~zipmonkey.models.TypedFile` per extracted file.
+
+    Raises:
+        TypeError: If ``dest`` is ``None`` (auto-cleanup temp-dir mode would
+            delete the files before the caller can use them; use the context
+            manager form for that). Raised eagerly, before any extraction.
     """
+    if dest is None:
+        raise TypeError(
+            "dest is required for zipmonkey.walk_typed(); for an auto-cleaned "
+            "temp dir use 'with zipmonkey.open(path) as arc: arc.walk_typed()'"
+        )
+    return _walk_typed(path, dest, password, recursive, extract_kwargs)
+
+
+def _walk_typed(
+    path: str | Path,
+    dest: str | Path,
+    password: bytes | None,
+    recursive: bool,
+    extract_kwargs: dict[str, object],
+) -> Iterator[TypedFile]:
     with Archive(path, password=password) as arc:
         yield from list(
             arc.walk_typed(dest, recursive=recursive, **extract_kwargs)

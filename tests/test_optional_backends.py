@@ -262,30 +262,44 @@ def test_sevenzip_duplicate_member_name_read_one_extract_records_collision(tmp_p
     assert res.skipped_collisions == ["f.txt"]
 
 
-def test_sevenzip_recursive_member_cap_precedes_filter(tmp_path):
-    # Documented limitation: for the non-streaming 7z backend under recursive=True
-    # the per-member cap is enforced before the leaf filter (every member must be
-    # materialised to sniff for nested archives). An over-cap member that would
-    # be filtered still raises -- whereas a streaming ZIP backend filters it.
+def test_sevenzip_recursive_filter_applies_before_cap(tmp_path):
+    # Recursive 7z detects nested archives by EXTENSION (looks_like_archive), so
+    # it never materialises a member just to sniff it. A filtered, over-cap
+    # member is therefore dropped by the filter and does NOT trip max_member_bytes
+    # -- uniform with the streaming ZIP/tar backends (this used to raise a
+    # spurious ArchiveLimitError; the extension-based detection removed that).
     py7zr = pytest.importorskip("py7zr")
     archive = tmp_path / "a.7z"
     with py7zr.SevenZipFile(archive, "w") as zf:
         zf.writef(io.BytesIO(b"\x00" * 1000), "big.bin")
         zf.writef(io.BytesIO(b"x,y\n"), "keep.csv")
-    # non-recursive: the filter drops big.bin cleanly
-    res = zipmonkey.extract(
-        archive, tmp_path / "nr", include="*.csv", max_member_bytes=500
-    )
-    assert res.skipped_filtered == ["big.bin"]
-    # recursive: the hard cap fires before the filter can apply
-    with pytest.raises(zipmonkey.ArchiveLimitError):
-        zipmonkey.extract(
+    for sub in ("nr", "r"):
+        res = zipmonkey.extract(
             archive,
-            tmp_path / "r",
-            recursive=True,
+            tmp_path / sub,
+            recursive=(sub == "r"),
             include="*.csv",
             max_member_bytes=500,
         )
+        assert res.skipped_filtered == ["big.bin"]
+        assert res.count == 1
+
+
+def test_sevenzip_recursive_nesting_detected_by_extension(tmp_path):
+    # A nested .7z inside a 7z is unpacked (extension matches); a nested archive
+    # stored under a NON-archive extension is treated as a leaf (the deliberate
+    # tradeoff of content-free, no-materialise detection for the 7z backend).
+    py7zr = pytest.importorskip("py7zr")
+    inner = tmp_path / "inner.7z"
+    with py7zr.SevenZipFile(inner, "w") as zf:
+        zf.writef(io.BytesIO(b"LEAF"), "leaf.txt")
+    outer = tmp_path / "outer.7z"
+    with py7zr.SevenZipFile(outer, "w") as zf:
+        zf.write(inner, "inner.7z")           # archive extension -> recursed
+        zf.write(inner, "renamed.bin")        # non-archive extension -> leaf
+    res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
+    assert [p.name for p in res.nested_extracted] == ["inner.7z"]
+    assert "renamed.bin" in {p.name for p in res.extracted}
 
 
 def test_sevenzip_read_keyed_by_member_name_no_path_reconstruction(tmp_path):
