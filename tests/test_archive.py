@@ -1045,6 +1045,21 @@ def test_duplicate_normalised_path_is_collision_not_overwrite(tmp_path):
     assert (out / "a.txt").read_bytes() == b"FIRST"  # first wins, not silent clobber
 
 
+def test_duplicate_normalised_path_is_collision_even_with_overwrite_false(tmp_path):
+    # A same-archive normalised duplicate must be recorded as a collision, not
+    # misclassified as skipped_existing just because the first member is already
+    # on disk -- the same-archive (written_targets) check runs before the
+    # overwrite/exists test. (A genuinely pre-existing file stays skipped_existing,
+    # covered by test_extract_overwrite_false_skips_existing.)
+    z = tmp_path / "dup.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.txt", b"FIRST")
+        zf.writestr("./a.txt", b"SECOND")
+    res = zipmonkey.extract(z, tmp_path / "out", overwrite=False)
+    assert res.skipped_collisions == ["./a.txt"]
+    assert res.skipped_existing == []
+
+
 def test_nested_container_recorded_even_when_inner_limit_aborts(tmp_path):
     inner = tmp_path / "inner.zip"
     with zipfile.ZipFile(inner, "w") as zf:

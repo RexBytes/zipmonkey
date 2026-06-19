@@ -245,6 +245,26 @@ def test_sevenzip_missing_member_raises(tmp_path):
             arc.read("nope.txt")
 
 
+@pytest.mark.parametrize("dotname", ["..notes.txt", "...txt", "..foo"])
+def test_sevenzip_dotdot_prefixed_basename_not_lost(tmp_path, dotname):
+    # The interior-".." escape guard must reject only a genuine leading ".."
+    # path component, NOT a legitimate basename that merely begins with two
+    # dots -- those used to read as b"" (silent data loss), the same class the
+    # guard was added to prevent.
+    py7zr = pytest.importorskip("py7zr")
+    import io
+
+    payload = b"REAL_USER_DATA_" + dotname.encode()
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(payload), dotname)
+    with zipmonkey.open(archive) as arc:
+        assert arc.read(dotname) == payload
+    zipmonkey.extract(archive, tmp_path / "out")
+    written = [p for p in (tmp_path / "out").rglob("*") if p.is_file()]
+    assert [p.read_bytes() for p in written] == [payload]
+
+
 def test_sevenzip_interior_dotdot_member_reads_full_content(tmp_path):
     # py7zr writes a member to its NORMALISED path, so a member stored as
     # "docs/../report.txt" lands at "report.txt". Reconstructing the raw name

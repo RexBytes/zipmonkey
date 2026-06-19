@@ -446,7 +446,15 @@ class _SevenZipBackend(_Backend):
                 # the same normalised path — joining the raw name would look for
                 # a file that was never written there and silently read b"".
                 norm = os.path.normpath(name)
-                if os.path.isabs(norm) or norm.startswith(".."):
+                # Reject only a genuine parent-traversal component. A bare
+                # `norm.startswith("..")` would also swallow legitimate basenames
+                # that merely begin with two dots ("..notes.txt", "...txt"),
+                # silently reading them as b"" -- the same data-loss class this
+                # guard exists to prevent. A real escape normalises to exactly
+                # ".." or "../...".
+                if os.path.isabs(norm) or norm == ".." or norm.startswith(
+                    ".." + os.sep
+                ):
                     # Would resolve outside the temp dir; py7zr refuses to write
                     # such members anyway, so there is nothing to read.
                     return b""
@@ -1089,15 +1097,18 @@ class Archive:
                 result.skipped_unsafe.append(e.name)
                 continue
 
-            if not ctx.overwrite and target.exists():
-                result.skipped_existing.append(e.name)
-                continue
-
             # Two members can normalise to the same path (e.g. "a.txt" and
             # "./a.txt"); the first wins, the rest are collisions rather than
-            # silent overwrites that would desync `extracted` from disk.
+            # silent overwrites that would desync `extracted` from disk. This is
+            # checked BEFORE the overwrite/exists test so a same-archive
+            # duplicate is recorded as a collision, not misclassified as a
+            # pre-existing file just because the first member is already on disk.
             if target in ctx.written_targets:
                 result.skipped_collisions.append(e.name)
+                continue
+
+            if not ctx.overwrite and target.exists():
+                result.skipped_existing.append(e.name)
                 continue
 
             # Preflight caps now that the member is known to be writable, so an
