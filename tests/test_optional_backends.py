@@ -262,44 +262,56 @@ def test_sevenzip_duplicate_member_name_read_one_extract_records_collision(tmp_p
     assert res.skipped_collisions == ["f.txt"]
 
 
-def test_sevenzip_recursive_filter_applies_before_cap(tmp_path):
-    # Recursive 7z detects nested archives by EXTENSION (looks_like_archive), so
-    # it never materialises a member just to sniff it. A filtered, over-cap
-    # member is therefore dropped by the filter and does NOT trip max_member_bytes
-    # -- uniform with the streaming ZIP/tar backends (this used to raise a
-    # spurious ArchiveLimitError; the extension-based detection removed that).
+def test_sevenzip_recursive_member_cap_precedes_filter(tmp_path):
+    # Documented limitation: under recursion the non-streaming 7z backend
+    # materialises each member to sniff it by CONTENT (for nested-archive
+    # detection), so max_member_bytes is enforced before the leaf filter. An
+    # over-cap member that would be filtered still raises -- whereas the
+    # streaming ZIP backend peeks cheaply and filters it first. (An earlier
+    # extension-based sniff that dodged this was reverted; see LIMITATIONS.md.)
     py7zr = pytest.importorskip("py7zr")
     archive = tmp_path / "a.7z"
     with py7zr.SevenZipFile(archive, "w") as zf:
         zf.writef(io.BytesIO(b"\x00" * 1000), "big.bin")
         zf.writef(io.BytesIO(b"x,y\n"), "keep.csv")
-    for sub in ("nr", "r"):
-        res = zipmonkey.extract(
-            archive,
-            tmp_path / sub,
-            recursive=(sub == "r"),
-            include="*.csv",
-            max_member_bytes=500,
-        )
-        assert res.skipped_filtered == ["big.bin"]
-        assert res.count == 1
+    # non-recursive: no sniff, so the filter drops big.bin cleanly
+    res = zipmonkey.extract(
+        archive, tmp_path / "nr", include="*.csv", max_member_bytes=500
+    )
+    assert res.skipped_filtered == ["big.bin"]
+    # recursive: the per-member cap fires before the filter (consistent for any
+    # member name, archive-like or not -- no name-based asymmetry).
+    for name in ("big.bin", "big.zip"):
+        a2 = tmp_path / f"{name}.7z"
+        with py7zr.SevenZipFile(a2, "w") as zf:
+            zf.writef(io.BytesIO(b"\x00" * 1000), name)
+            zf.writef(io.BytesIO(b"x,y\n"), "keep.csv")
+        with pytest.raises(zipmonkey.ArchiveLimitError):
+            zipmonkey.extract(
+                a2,
+                tmp_path / f"r_{name}",
+                recursive=True,
+                include="*.csv",
+                max_member_bytes=500,
+            )
 
 
-def test_sevenzip_recursive_nesting_detected_by_extension(tmp_path):
-    # A nested .7z inside a 7z is unpacked (extension matches); a nested archive
-    # stored under a NON-archive extension is treated as a leaf (the deliberate
-    # tradeoff of content-free, no-materialise detection for the 7z backend).
+def test_sevenzip_recursive_nesting_detected_by_content(tmp_path):
+    # Nested-archive detection is by CONTENT (magic bytes), so a real archive is
+    # recursed regardless of its name -- both "inner.7z" and a real archive
+    # stored as "renamed.bin" are unpacked; a plain file is a leaf.
     py7zr = pytest.importorskip("py7zr")
     inner = tmp_path / "inner.7z"
     with py7zr.SevenZipFile(inner, "w") as zf:
         zf.writef(io.BytesIO(b"LEAF"), "leaf.txt")
     outer = tmp_path / "outer.7z"
     with py7zr.SevenZipFile(outer, "w") as zf:
-        zf.write(inner, "inner.7z")           # archive extension -> recursed
-        zf.write(inner, "renamed.bin")        # non-archive extension -> leaf
+        zf.write(inner, "inner.7z")           # real archive, archive name
+        zf.write(inner, "renamed.bin")        # real archive, non-archive name
+        zf.writef(io.BytesIO(b"plain"), "note.txt")  # genuine leaf
     res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
-    assert [p.name for p in res.nested_extracted] == ["inner.7z"]
-    assert "renamed.bin" in {p.name for p in res.extracted}
+    assert {p.name for p in res.nested_extracted} == {"inner.7z", "renamed.bin"}
+    assert "note.txt" in {p.name for p in res.extracted}
 
 
 def test_sevenzip_read_keyed_by_member_name_no_path_reconstruction(tmp_path):
