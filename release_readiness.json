@@ -66,7 +66,14 @@
       "commits": [],
       "models": ["opus", "sonnet", "haiku"],
       "findings": {},
-      "note": "CLEAN at full diversity -- all three models found ZERO defects across a broad assault deliberately steered OFF the now-closed 7z seam onto safety.py (traversal/realpath/drive-letter/UNC/control), detect.py thresholds, cap enforcement at N vs N+1 with partial-result cleanup, artifacts four-corner tests, models invariants, CLI exit codes, and the single-file backends (sonnet alone ran ~35 real-input repros). The Panel-7 BytesIOFactory refactor held. Only the long-standing rar directory-member asymmetry was noted again as READ-ONLY-UNVERIFIED (no rar binary) -- not a confirmed finding. Second consecutive full-diversity clean panel: clean streak 2 of 2 -> release gate satisfied."
+      "note": "CLEAN at full diversity -- all three models found ZERO defects across a broad assault deliberately steered OFF the now-closed 7z seam onto safety.py (traversal/realpath/drive-letter/UNC/control), detect.py thresholds, cap enforcement at N vs N+1 with partial-result cleanup, artifacts four-corner tests, models invariants, CLI exit codes, and the single-file backends (sonnet alone ran ~35 real-input repros). The Panel-7 BytesIOFactory refactor held. Only the long-standing rar directory-member asymmetry was noted again as READ-ONLY-UNVERIFIED (no rar binary) -- not a confirmed finding. Second consecutive full-diversity clean panel; this earned RELEASABLE on the PRE-consolidation tree."
+    },
+    {
+      "id": "9",
+      "commits": ["0ebc8f9"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"LOW": 1},
+      "note": "CONFIRMATION panel after the hhhw8t consolidation + CI fix (those changed converged code, so the Panels 7-8 streak was stale). haiku and sonnet found ZERO; opus found one LOW regression from the consolidation: a non-archive named like an archive (text 'decoy.zip') inside a 7z escaped include/exclude because extension-based detection presumed it a container, it failed to open, and was extracted as a leaf -- the streaming backends content-sniff and filter it. Fixed: re-apply the leaf filter when an extension-classified container fails to open, unwinding the write/budget. Also fixed (separate, before this panel): CI was red since Panel 3 on the py7zr 0.20.8 matrix leg (FileInfo.is_symlink only exists in py7zr>=1.1) -> dep bounded py7zr>=1.1,<2, CI matrix [1.1.0,1.1.3], CI now green. NOTE: the decoy fix (commit 0ebc8f9) changed code AFTER this panel, so a Panel-10 confirmation on the post-fix tree is required to honestly re-establish the clean streak."
     }
   ]
 }

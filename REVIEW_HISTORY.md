@@ -14,13 +14,13 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 8 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 17 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 7 LOW, 3 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 → 1.0 → 0.0 |
-| Tests | 273 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~250 passing / 5 skipped |
-| Release-Readiness Score | 94.3 / 100 |
-| Convergence | clean streak 2 of 2 ✓; confidence 0.86; rate 0.00 |
-| Verdict | **RELEASABLE** — gates green, RRS ≥ 90, two consecutive full-diversity clean panels |
+| Multi-model review panels | 9 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 18 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 8 LOW, 3 NIT |
+| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 → 1.0 → 0.0 → 1.0 |
+| Tests | 278 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~92% coverage. CI green (py7zr 1.1.0/1.1.3 matrix) |
+| Release-Readiness Score | 94.5 / 100 |
+| Convergence | `readiness.py` streak 3; BUT a post-Panel-9 fix changed code — see caveat |
+| Verdict | **RELEASABLE pending a Panel-10 confirmation** — gates green and CI green, but the Panel-9 decoy fix landed after the panel, so the streak must be re-confirmed on the post-fix tree |
 
 > **Converged.** Panels 7 and 8 are two consecutive full-diversity panels with
 > nothing above LOW (Panel 8 found nothing at all from any model), so the
@@ -48,7 +48,8 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 6 | 1 MEDIUM, 1 LOW | 5.0 | 7z `..`-prefixed basename loss (Panel-5 fix regression); overwrite=False collision bucket |
 | — | _root-cause refactor_ | — | 7z read → in-memory BytesIOFactory keyed by member name (commit `d3cd07a`) |
 | 7 | 1 LOW | 1.0 | Recursive-7z cap-before-filter (documented); duplicate-name read HIGH dismissed — refactor held |
-| 8 | _none_ | 0.0 | Clean at full diversity (broad sweep off the 7z seam) — release gate satisfied |
+| 8 | _none_ | 0.0 | Clean at full diversity (broad sweep off the 7z seam) — release gate satisfied (pre-consolidation) |
+| 9 | 1 LOW | 1.0 | Confirmation post-consolidation+CI-fix: 7z extension-detected decoy leaf escaped the filter (fixed); CI red→green |
 
 ## What each panel found and how it was fixed
 
@@ -229,6 +230,41 @@ BytesIOFactory refactor (this branch) was kept over hhhw8t's temp-dir approach.
 > confirmation panel (Panel 9) is recommended before treating the merged result
 > as re-converged. Gates remain green and tests pass, but the panel signal needs
 > to be refreshed on the merged code.
+
+## CI was red for ~7 commits (caught a real cross-version 7z defect)
+
+The branch CI had been **failing since Panel 3** — the `optional-backends` job's
+**py7zr 0.20.8** matrix leg, on the 7z symlink test. py7zr 0.20.8 (and 1.0.x)
+expose *no* symlink information on `FileInfo`; `FileInfo.is_symlink` only landed
+in **1.1.0**, so 7z symlink skipping (a real safety feature) couldn't work on
+the older pin. Local runs used py7zr 1.1.3 and were blind to it — and
+`readiness.py`'s gates run *local* pytest only, so the "RELEASABLE" verdict had
+been computed without ever exercising the version matrix. This is the
+documented "CI is non-negotiable; it sees what local runs cannot" lesson biting
+in practice. Fixed by bounding the dependency `py7zr>=1.1,<2`, matrixing CI over
+`[1.1.0, 1.1.3]`, and dropping the now-dead py7zr 0.x read fallback. CI is green
+(commit `11c2a76`).
+
+## Panel 9 — confirmation on the merged + CI-fixed tree (commit `0ebc8f9`)
+
+Full-diversity confirmation panel. **haiku and sonnet found zero defects.** opus
+found **1 LOW** — a regression from the consolidation's extension-based 7z
+nesting: a non-archive named like an archive (a text file `decoy.zip`) inside a
+7z is *presumed* a container by `looks_like_archive()`, so it bypasses the leaf
+filter, is written to be opened, fails to open as an archive, and was then
+extracted as a leaf — escaping `include`/`exclude`. The content-sniffing ZIP/tar
+backends filter it correctly. Fixed by re-applying the leaf filter when an
+extension-classified container fails to open (and unwinding the file/byte budget
+of the file written only for the open-attempt). Real nested 7z archives still
+always traverse; the no-filter path is unchanged.
+
+> **Open item before final ship:** the Panel-9 decoy fix (`0ebc8f9`) changed
+> code *after* the panel reviewed it, so `readiness.py`'s RELEASABLE (streak 3,
+> RRS 94.5) is not yet honest for the current HEAD. A **Panel 10** confirmation
+> on the post-fix tree is needed to re-establish the clean streak on the exact
+> code being shipped. (Two of three Panel-9 models were already clean and the
+> fix is small/tested, so residual risk is low — but the methodology's whole
+> point is to *measure* that, not assume it.)
 
 ## Release decision (v0.1.0)
 
