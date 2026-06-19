@@ -356,6 +356,90 @@ def test_zip_symlink_marked_special_and_skipped(tmp_path):
     assert (tmp_path / "out" / "target.txt").read_bytes() == b"real"
 
 
+def test_zip_symlink_reads_as_empty(tmp_path):
+    # read()/open_member must honour the "special members are empty" contract
+    # for ZIP symlinks too, rather than returning the link-target bytes (the
+    # symmetric tar guard exists; this pins the ZIP one).
+    z = tmp_path / "links.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        info = zipfile.ZipInfo("alias.txt")
+        info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+        zf.writestr(info, "target.txt")  # body is the link target text
+        zf.writestr("target.txt", b"real")
+    with zipmonkey.open(z) as arc:
+        assert arc.read("alias.txt") == b""
+        with arc.open_member("alias.txt") as fh:
+            assert fh.read() == b""
+        # the genuine file is unaffected
+        assert arc.read("target.txt") == b"real"
+
+
+def test_overlong_member_name_skipped_not_crash(tmp_path):
+    # A member whose basename exceeds the filesystem NAME_MAX (~255 bytes) must
+    # be recorded and skipped, not abort the whole extraction with a raw
+    # OSError(ENAMETOOLONG) that discards the result and any sibling files.
+    z = tmp_path / "long.zip"
+    longname = "a" * 300 + ".txt"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("before.txt", b"1")
+        zf.writestr(longname, b"2")
+        zf.writestr("after.txt", b"3")
+
+    res = zipmonkey.extract(z, tmp_path / "out")
+    assert res.count == 2  # the two well-named siblings still land
+    assert res.skipped_unsafe == [longname]
+    assert {p.name for p in (tmp_path / "out").iterdir()} == {
+        "before.txt",
+        "after.txt",
+    }
+    # The overwrite=False path probes target.exists() too; it must not crash.
+    res2 = zipmonkey.extract(z, tmp_path / "out2", overwrite=False)
+    assert res2.skipped_unsafe == [longname]
+
+
+def test_overlong_flatmode_collision_skipped_not_crash(tmp_path):
+    # Flat mode suffixes " (n)" on a basename collision; if that pushes the
+    # candidate past NAME_MAX the .exists() probe used to raise a raw
+    # OSError(ENAMETOOLONG), aborting extraction. It must be recorded skipped,
+    # mirroring the non-flat path (the sibling that hid behind the first fix).
+    base = "a" * 252  # 252 + " (1)" = 256 > NAME_MAX(255)
+    z = tmp_path / "flat.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr(f"dir1/{base}", b"FIRST")
+        zf.writestr(f"dir2/{base}", b"SECOND")  # collides in flat mode
+    res = zipmonkey.extract(z, tmp_path / "out", flat=True)
+    assert res.count == 1
+    assert len(res.skipped_unsafe) == 1
+
+
+def test_overlong_nested_extract_dir_skipped_not_crash(tmp_path):
+    # Recursive (non-flat) mode names the contents dir "<archive>_extracted";
+    # if that exceeds NAME_MAX the _unique_dir probe used to crash. The
+    # container must be reclassified to skipped_nested (not nested_extracted),
+    # and written_count must stay consistent.
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("leaf.txt", b"content")
+    inner_name = "x" * 246 + ".zip"  # +"_extracted" = 260 > NAME_MAX
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(inner, inner_name)
+    res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
+    assert len(res.skipped_nested) == 1
+    assert res.nested_extracted == []
+    assert res.written_count == 1
+
+
+def test_zip_directory_open_stream_returns_none(tmp_path):
+    # The _Backend.open_stream contract returns None for directory members.
+    z = tmp_path / "d.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("dir/", "")
+        zf.writestr("dir/f.txt", b"hi")
+    with zipmonkey.open(z) as arc:
+        assert arc._backend.open_stream("dir/") is None
+
+
 def test_open_member_directory_returns_empty_stream(tmp_path):
     z = tmp_path / "d.zip"
     with zipfile.ZipFile(z, "w") as zf:
@@ -778,6 +862,75 @@ def test_single_file_fallback_name(tmp_path):
     assert rep.entries[0].name == "data"
 
 
+def _zip_one(tmp_path):
+    z = tmp_path / "one.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+    return z
+
+
+def _tar_one(tmp_path):
+    t = tmp_path / "one.tar"
+    data = b"hi"
+    with tarfile.open(t, "w") as tf:
+        ti = tarfile.TarInfo("a.txt")
+        ti.size = len(data)
+        tf.addfile(ti, io.BytesIO(data))
+    return t
+
+
+def _gz_one(tmp_path):
+    import gzip
+
+    g = tmp_path / "lone.gz"
+    with gzip.open(g, "wb") as f:
+        f.write(b"hi")
+    return g
+
+
+@pytest.mark.parametrize("factory", [_zip_one, _tar_one, _gz_one])
+def test_missing_member_raises_archive_read_error(tmp_path, factory):
+    # Reading a name that is not in the archive must raise the documented
+    # ArchiveReadError uniformly across backends -- not leak a raw KeyError
+    # (zip/tar) nor silently return bytes (the single-file backend used to
+    # return the lone member's payload for any name).
+    p = factory(tmp_path)
+    with zipmonkey.open(p) as arc:
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.read("does-not-exist")
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.open_member("does-not-exist")
+
+
+@pytest.mark.parametrize(
+    "ext,opener",
+    [(".gz", "gzip"), (".xz", "lzma")],
+)
+def test_truncated_single_file_normalises_to_read_error(tmp_path, ext, opener):
+    # A truncated gzip/xz passes validate() (one byte decodes) but fails later
+    # when entries()/inspect()/namelist() stream the whole payload to size it.
+    # The raw EOFError/LZMAError must surface as the documented ArchiveReadError,
+    # not leak a library traceback past the package exception hierarchy.
+    import gzip
+    import lzma
+    import os
+
+    mod = {"gzip": gzip, "lzma": lzma}[opener]
+    whole = tmp_path / ("full" + ext)
+    with mod.open(whole, "wb") as f:
+        f.write(os.urandom(100_000))  # incompressible -> truncation really cuts
+    blob = whole.read_bytes()
+    trunc = tmp_path / ("trunc" + ext)
+    trunc.write_bytes(blob[: len(blob) // 2])
+
+    # open() still succeeds (validate only reads one byte)...
+    with zipmonkey.open(trunc) as arc:
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.namelist()
+    with pytest.raises(zipmonkey.ArchiveReadError):
+        zipmonkey.inspect(trunc)
+
+
 # -- walk_typed recursive flag --------------------------------------------- #
 
 
@@ -892,6 +1045,21 @@ def test_duplicate_normalised_path_is_collision_not_overwrite(tmp_path):
     assert (out / "a.txt").read_bytes() == b"FIRST"  # first wins, not silent clobber
 
 
+def test_duplicate_normalised_path_is_collision_even_with_overwrite_false(tmp_path):
+    # A same-archive normalised duplicate must be recorded as a collision, not
+    # misclassified as skipped_existing just because the first member is already
+    # on disk -- the same-archive (written_targets) check runs before the
+    # overwrite/exists test. (A genuinely pre-existing file stays skipped_existing,
+    # covered by test_extract_overwrite_false_skips_existing.)
+    z = tmp_path / "dup.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.txt", b"FIRST")
+        zf.writestr("./a.txt", b"SECOND")
+    res = zipmonkey.extract(z, tmp_path / "out", overwrite=False)
+    assert res.skipped_collisions == ["./a.txt"]
+    assert res.skipped_existing == []
+
+
 def test_nested_container_recorded_even_when_inner_limit_aborts(tmp_path):
     inner = tmp_path / "inner.zip"
     with zipfile.ZipFile(inner, "w") as zf:
@@ -930,3 +1098,16 @@ def test_nested_archive_inherits_password(tmp_path):
     )
     leaf = next(p for p in res.extracted if p.name == "s.txt")
     assert leaf.read_bytes() == b"classified"
+
+
+def test_extract_module_func_requires_dest(tmp_path):
+    # The convenience zipmonkey.extract()/walk_typed() refuse dest=None eagerly
+    # (the auto-cleanup temp-dir mode is only safe via the context manager,
+    # which would otherwise delete the files before the caller can use them).
+    z = tmp_path / "a.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("f.txt", b"hi")
+    with pytest.raises(TypeError, match="dest is required"):
+        zipmonkey.extract(z, None)
+    with pytest.raises(TypeError, match="dest is required"):
+        list(zipmonkey.walk_typed(z, None))

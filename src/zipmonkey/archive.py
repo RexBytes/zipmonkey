@@ -11,11 +11,13 @@ from __future__ import annotations
 
 import builtins
 import bz2
+import errno
 import fnmatch
 import gzip
 import lzma
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -26,7 +28,12 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .artifacts import is_os_artifact
-from .detect import category_for, detect_type, is_archive_type
+from .detect import (
+    category_for,
+    detect_type,
+    is_archive_type,
+    looks_like_archive,
+)
 from .models import ArchiveEntry, ExtractResult, InspectReport, TypedFile
 from .safety import (
     DEFAULT_MAX_DEPTH,
@@ -69,11 +76,14 @@ class ArchiveReadError(ValueError):
 
 
 # Low-level errors that mean "this member could not be read" (wrong/missing
-# password, bad CRC, corrupt compressed data). Note BadZipFile and BadGzipFile
-# are NOT RuntimeError/each-other (BadZipFile subclasses Exception directly,
-# BadGzipFile subclasses OSError), so both bases are listed explicitly.
-# ArchiveLimitError (a RuntimeError subclass) is raised only OUTSIDE the
-# narrow read-guarded blocks, so it is never swallowed here.
+# password, bad CRC, corrupt compressed data, no such member). Note BadZipFile
+# and BadGzipFile are NOT RuntimeError/each-other (BadZipFile subclasses
+# Exception directly, BadGzipFile subclasses OSError), so both bases are listed
+# explicitly. KeyError is how zipfile/tarfile signal "no such member"; listing
+# it normalises a missing-member lookup into ArchiveReadError instead of leaking
+# a raw KeyError past the public read API. ArchiveLimitError (a RuntimeError
+# subclass) is raised only OUTSIDE the narrow read-guarded blocks, so it is
+# never swallowed here.
 _READ_ERRORS = (
     RuntimeError,
     OSError,
@@ -81,6 +91,7 @@ _READ_ERRORS = (
     lzma.LZMAError,
     EOFError,
     zipfile.BadZipFile,
+    KeyError,
 )
 
 
@@ -155,14 +166,35 @@ class _ZipBackend(_Backend):
             )
         return out
 
+    def _is_special(self, name: str) -> bool:
+        # A ZIP symlink stores the Unix mode in external_attr's high 16 bits;
+        # its body is the link-target text, not file content. Mirror the tar
+        # backend: special members read as empty and have no content stream.
+        try:
+            info = self._zf.getinfo(name)
+        except KeyError:
+            return False
+        mode = info.external_attr >> 16
+        return bool(stat.S_ISLNK(mode)) if mode else False
+
     def read(self, name: str) -> bytes:
+        if self._is_special(name):
+            return b""
         return self._zf.read(name)
 
     def peek(self, name: str, n: int) -> bytes:
+        if self._is_special(name):
+            return b""
         with self._zf.open(name) as fh:
             return fh.read(n)
 
-    def open_stream(self, name: str) -> BinaryIO:
+    def open_stream(self, name: str) -> BinaryIO | None:
+        try:
+            is_dir = self._zf.getinfo(name).is_dir()
+        except KeyError:
+            is_dir = False
+        if is_dir or self._is_special(name):
+            return None  # dirs/specials have no content stream (interface)
         return self._zf.open(name)  # type: ignore[return-value]
 
     def close(self) -> None:
@@ -271,12 +303,21 @@ class _SingleFileBackend(_Backend):
         # Stream-count without holding the whole payload in memory (bomb-safe).
         if self._size is None:
             total = 0
-            with self._opener(self._path, "rb") as fh:
-                while True:
-                    chunk = fh.read(_CHUNK)
-                    if not chunk:
-                        break
-                    total += len(chunk)
+            try:
+                with self._opener(self._path, "rb") as fh:
+                    while True:
+                        chunk = fh.read(_CHUNK)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+            except _DECOMP_ERRORS as exc:
+                # A truncated/corrupt gzip/xz/bz2 stream only fails mid-stream:
+                # validate() reads one byte and passes, then entries()/inspect()/
+                # namelist() trip the raw EOFError/LZMAError/OSError here.
+                # Normalise it so callers and the CLI get the documented
+                # ArchiveReadError, not a library traceback that escapes the
+                # package exception hierarchy.
+                raise _as_read_error(self._member, exc) from exc
             self._size = total
         return self._size
 
@@ -291,15 +332,25 @@ class _SingleFileBackend(_Backend):
             )
         ]
 
+    def _check_name(self, name: str) -> None:
+        # A single-file archive has exactly one member; reject any other name so
+        # the missing-member contract matches the multi-member backends (which
+        # raise) instead of silently returning the lone member's bytes.
+        if name != self._member:
+            raise KeyError(name)
+
     def read(self, name: str) -> bytes:
+        self._check_name(name)
         with self._opener(self._path, "rb") as fh:
             return fh.read()
 
     def peek(self, name: str, n: int) -> bytes:
+        self._check_name(name)
         with self._opener(self._path, "rb") as fh:
             return fh.read(n)
 
     def open_stream(self, name: str) -> BinaryIO:
+        self._check_name(name)
         return self._opener(self._path, "rb")  # type: ignore[return-value]
 
     def close(self) -> None:
@@ -325,8 +376,34 @@ class _SevenZipBackend(_Backend):
         self._py7zr = py7zr
         self._path = path
         self._password = pwd
-        with py7zr.SevenZipFile(path, mode="r", password=pwd) as zf:
-            self._info = list(zf.list())
+        try:
+            with py7zr.SevenZipFile(path, mode="r", password=pwd) as zf:
+                self._info = list(zf.list())
+        except py7zr.exceptions.PasswordRequired as exc:
+            # An encrypted-header 7z needs the password just to list members, so
+            # this surfaces at open time. Name the cause instead of letting
+            # _build_optional fold it into the generic "corrupt or unsupported"
+            # message (which a caller cannot tell apart from a genuinely bad
+            # file). A WRONG password instead yields a garbage-parse error that
+            # is indistinguishable from corruption, so it keeps the generic path.
+            raise UnsupportedArchiveError(
+                f"7z archive has an encrypted header and requires a password: "
+                f"{path}"
+            ) from exc
+        self._names = {item.filename for item in self._info}
+        self._dirs = {
+            item.filename
+            for item in self._info
+            if getattr(item, "is_directory", False)
+        }
+        # py7zr exposes FileInfo.is_symlink; flag those as special so they are
+        # skipped (not materialised) and read as empty, exactly like the ZIP/tar
+        # backends. getattr keeps it working on py7zr versions lacking the field.
+        self._specials = {
+            item.filename
+            for item in self._info
+            if getattr(item, "is_symlink", False)
+        }
 
     def entries(self) -> list[ArchiveEntry]:
         out: list[ArchiveEntry] = []
@@ -338,29 +415,57 @@ class _SevenZipBackend(_Backend):
                     compressed_size=getattr(item, "compressed", 0) or 0,
                     is_dir=bool(getattr(item, "is_directory", False)),
                     is_artifact=is_os_artifact(item.filename),
+                    is_special=item.filename in self._specials,
                 )
             )
         return out
 
     def read(self, name: str) -> bytes:
+        # Directory and special (symlink) members have no content -> b"",
+        # symmetric with tar/zip; this also avoids extracting a symlink that
+        # py7zr would refuse or follow.
+        if name in self._dirs or name in self._specials:
+            return b""
         # py7zr corrupt-member / bad-password errors subclass Exception (not in
         # _READ_ERRORS); normalise them here so the read contract holds. peek
         # and open_stream both route through read, so this covers them too.
         try:
-            with self._py7zr.SevenZipFile(
-                self._path, mode="r", password=self._password
-            ) as zf:
-                data = zf.read([name])
-                return data[name].read()
+            if name not in self._names:
+                # Missing member: raise so it normalises to ArchiveReadError,
+                # rather than masking "missing" as "empty".
+                raise KeyError(name)
+            return self._read_member(name)
         except Exception as exc:
             raise _as_read_error(name, exc) from exc
+
+    def _read_member(self, name: str) -> bytes:
+        # py7zr >= 1.0 removed SevenZipFile.read()/readall(). Capture the member
+        # straight into memory via BytesIOFactory, keyed by py7zr's OWN member
+        # name -- no temp files and no path reconstruction. The previous
+        # extract-to-temp-then-Path(td)/name approach had to re-derive py7zr's
+        # on-disk normalisation and silently returned b"" whenever the guess was
+        # wrong (interior "..", or basenames beginning with dots): two distinct
+        # silent-data-loss defects. Reading by the archive's own member name has
+        # no such gap. py7zr 0.x lacks the factory but still has read().
+        py7zr = self._py7zr
+        factory_cls = getattr(getattr(py7zr, "io", None), "BytesIOFactory", None)
+        with py7zr.SevenZipFile(
+            self._path, mode="r", password=self._password
+        ) as zf:
+            if factory_cls is not None:
+                factory = factory_cls(limit=sys.maxsize)
+                zf.extract(targets=[name], factory=factory)
+                return factory.get(name).read()
+            return zf.read([name])[name].read()  # py7zr 0.x
 
     def peek(self, name: str, n: int) -> bytes:
         return self.read(name)[:n]
 
-    def open_stream(self, name: str) -> BinaryIO:
+    def open_stream(self, name: str) -> BinaryIO | None:
         import io
 
+        if name in self._dirs or name in self._specials:
+            return None  # dirs/specials have no content stream (interface)
         return io.BytesIO(self.read(name))
 
     def close(self) -> None:
@@ -738,7 +843,7 @@ class Archive:
 
         Raises:
             ArchiveReadError: If the member cannot be read (e.g. wrong/missing
-                password or corrupt data).
+                password or corrupt data) or no member of that name exists.
         """
         try:
             return self._backend.read(name)
@@ -760,7 +865,7 @@ class Archive:
 
         Raises:
             ArchiveReadError: If the member cannot be opened (e.g. wrong/missing
-                password).
+                password) or no member of that name exists.
         """
         try:
             stream = self._backend.open_stream(name)
@@ -947,19 +1052,24 @@ class Archive:
 
             is_arc = False
             if recursive:
-                # A non-streaming backend (7z) materialises the whole member to
-                # peek it, so enforce the per-member cap *before* peeking.
-                if not backend.streaming:
-                    check_member_bytes(
-                        e.size, ctx.max_member_bytes, e.name, partial_result=result
-                    )
-                try:
-                    head = backend.peek(e.name, _PEEK_BYTES)
-                except _READ_ERRORS as exc:
-                    raise _as_read_error(e.name, exc) from exc
-                # Pass the filename so zip-container documents (xlsx/docx/jar/…)
-                # are classified as leaves, not unpacked as raw zips.
-                is_arc = is_archive_type(detect_type(head, filename=e.name))
+                if backend.streaming:
+                    # Cheap to peek: sniff nested archives by magic bytes. Pass
+                    # the filename so zip-container documents (xlsx/docx/jar/…)
+                    # stay leaves, not unpacked as raw zips.
+                    try:
+                        head = backend.peek(e.name, _PEEK_BYTES)
+                    except _READ_ERRORS as exc:
+                        raise _as_read_error(e.name, exc) from exc
+                    is_arc = is_archive_type(detect_type(head, filename=e.name))
+                else:
+                    # Non-streaming (7z): peeking would materialise the whole
+                    # member, so detect nested archives by extension instead.
+                    # This keeps the filter/cap preflight uniform with streaming
+                    # backends — a filtered or oversized member is never
+                    # materialised just to sniff it — and the write-time caps
+                    # still bound the real reads. The tradeoff: a nested archive
+                    # with a non-archive extension is treated as a leaf.
+                    is_arc = looks_like_archive(e.name)
 
             # The include/exclude filter applies to leaf files only; archive
             # containers are always traversed so a leaf filter reaches inside.
@@ -971,22 +1081,34 @@ class Archive:
             if target is None:
                 continue  # already recorded as unsafe
 
-            if not ctx.overwrite and target.exists():
-                result.skipped_existing.append(e.name)
+            # Prepare the target (create parent, detect clashes/unwritable names)
+            # FIRST, so any filesystem probe below cannot trip a raw OSError, and
+            # so a member that cannot be written never consumes the file/byte
+            # budget (which would raise a spurious ArchiveLimitError).
+            placement = self._prepare_target(target)
+            if placement == "collision":
+                # File/dir name clash ("foo" plus "foo/bar"): cannot place both.
+                result.skipped_collisions.append(e.name)
+                continue
+            if placement == "unwritable":
+                # The filesystem rejects this target name (e.g. a component
+                # exceeds NAME_MAX). Record and continue rather than aborting the
+                # whole extraction with an uncaught OSError(ENAMETOOLONG).
+                result.skipped_unsafe.append(e.name)
                 continue
 
             # Two members can normalise to the same path (e.g. "a.txt" and
             # "./a.txt"); the first wins, the rest are collisions rather than
-            # silent overwrites that would desync `extracted` from disk.
+            # silent overwrites that would desync `extracted` from disk. This is
+            # checked BEFORE the overwrite/exists test so a same-archive
+            # duplicate is recorded as a collision, not misclassified as a
+            # pre-existing file just because the first member is already on disk.
             if target in ctx.written_targets:
                 result.skipped_collisions.append(e.name)
                 continue
 
-            # Detect file/dir name clashes ("foo" plus "foo/bar") BEFORE the cap
-            # preflight, so a member that cannot be written never consumes the
-            # file/byte budget (which would raise a spurious ArchiveLimitError).
-            if self._prepare_target(target) == "collision":
-                result.skipped_collisions.append(e.name)
+            if not ctx.overwrite and target.exists():
+                result.skipped_existing.append(e.name)
                 continue
 
             # Preflight caps now that the member is known to be writable, so an
@@ -1045,7 +1167,17 @@ class Archive:
             result.skipped_unsafe.append(name)
             return None
         if ctx.flat:
-            return dest / _unique_basename(resolved.name, dest, flat_used)
+            # In flat mode the (collision-suffixed) basename can exceed the
+            # filesystem NAME_MAX; the .exists() probe inside _unique_basename
+            # then raises ENAMETOOLONG. Record it as unsafe rather than aborting
+            # the whole extraction, matching _prepare_target's non-flat handling.
+            try:
+                return dest / _unique_basename(resolved.name, dest, flat_used)
+            except OSError as exc:
+                if exc.errno == errno.ENAMETOOLONG:
+                    result.skipped_unsafe.append(name)
+                    return None
+                raise
         return resolved
 
     def _prepare_target(self, target: Path) -> str:
@@ -1053,15 +1185,26 @@ class Archive:
 
         Returns ``"collision"`` when the member cannot be placed (a path
         component is a file, or the target itself is an existing directory),
-        else ``"ok"``. Run before the cap preflight so an unplaceable member
-        does not consume the file/byte budget.
+        ``"unwritable"`` when the filesystem rejects the target name (e.g. a
+        path component exceeds NAME_MAX), else ``"ok"``. Run before the cap
+        preflight so an unplaceable member does not consume the file/byte
+        budget.
         """
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
         except (FileExistsError, NotADirectoryError):
             return "collision"
-        if target.exists() and target.is_dir():
-            return "collision"
+        except OSError as exc:
+            if exc.errno == errno.ENAMETOOLONG:
+                return "unwritable"
+            raise
+        try:
+            if target.exists() and target.is_dir():
+                return "collision"
+        except OSError as exc:
+            if exc.errno == errno.ENAMETOOLONG:
+                return "unwritable"
+            raise
         return "ok"
 
     def _write_member(
@@ -1150,9 +1293,20 @@ class Archive:
             sub_dest = top_dest
             sub_flat_used = flat_used
         else:
-            sub_dest = _unique_dir(
-                archive_path.with_name(archive_path.name + "_extracted")
-            )
+            try:
+                sub_dest = _unique_dir(
+                    archive_path.with_name(archive_path.name + "_extracted")
+                )
+            except OSError as exc:
+                if exc.errno != errno.ENAMETOOLONG:
+                    raise
+                # The "<name>_extracted" dir name exceeds NAME_MAX, so this
+                # container cannot be unpacked. It is on disk; reclassify it from
+                # nested_extracted (recorded above) to skipped_nested (un-unpacked
+                # container) and stop, instead of crashing the whole extraction.
+                result.nested_extracted.remove(archive_path)
+                result.skipped_nested.append(str(archive_path))
+                return True
             sub_flat_used = set()
 
         try:
@@ -1224,8 +1378,10 @@ def open(path: str | Path, *, password: bytes | None = None) -> Archive:  # noqa
     Args:
         path: Path to the archive file.
         password: Optional password as bytes (ZIP/7z/rar). A wrong or missing
-            password surfaces as an error from the underlying library at read
-            time, not at open time.
+            password normally surfaces at read time, not at open time. The one
+            exception is a 7z archive written with an *encrypted header*: listing
+            its members already needs the key, so a missing password raises
+            UnsupportedArchiveError (naming the password cause) at open time.
 
     Returns:
         An open :class:`Archive`.

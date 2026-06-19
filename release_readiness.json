@@ -1,0 +1,72 @@
+{
+  "_comment": "Config for scripts/readiness.py (see RELEASE_READINESS.md). Signals, available_models, weights and targets are read from here so the script stays byte-identical across projects. 'panels' starts empty: append one object per review panel (its participating models and NEW confirmed findings by severity) as panels are run, then re-run scripts/readiness.py.",
+  "severity_weights": {"CRITICAL": 40, "HIGH": 10, "MEDIUM": 4, "LOW": 1, "NIT": 0.2},
+  "available_models": ["opus", "sonnet", "haiku"],
+  "tau": 2,
+  "coverage_target": 0.90,
+  "contract_coverage_estimate": 0.80,
+  "known_open_defects": 0,
+  "signals": {
+    "property_tests": {"file": "tests/test_properties.py", "needle": "hypothesis"},
+    "security": {"file": "tests/test_safety.py", "needles": ["traversal", "escape"]},
+    "docs": ["LIMITATIONS.md", "SKILL.md", "CONTRIBUTING.md", "README.md"]
+  },
+  "panels": [
+    {
+      "id": "1",
+      "commits": ["c3f5b5e"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"HIGH": 1, "MEDIUM": 1, "LOW": 1},
+      "note": "First panel. HIGH (consensus, 3 models): 7z backend broken against py7zr>=1.0 which removed SevenZipFile.read() (default suite blind, tests skip without py7zr). MEDIUM (singleton, reproduced): ZIP symlinks read as link-target bytes, not b'', violating the special-member-empty contract the tar backend honoured. LOW: _human_size emitted '1024.0P' past the petabyte unit."
+    },
+    {
+      "id": "2",
+      "commits": ["4ac5217"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 2},
+      "note": "MEDIUM (consensus, opus+sonnet): truncated gzip/xz leaked a raw EOFError/LZMAError from _SingleFileBackend._streamed_size past the exception hierarchy and crashed the CLI; now normalised to ArchiveReadError. MEDIUM (singleton haiku, reproduced; right-sized from HIGH): an over-NAME_MAX member name raised an uncaught OSError(ENAMETOOLONG) aborting extraction; now recorded in skipped_unsafe. Dismissed: haiku 'CRITICAL' single-file read() ignoring name (harmless single-member leniency; sonnet concurred below-threshold) and a cosmetic return-type NIT."
+    },
+    {
+      "id": "3",
+      "commits": ["b49aaeb"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 1, "NIT": 1},
+      "note": "MEDIUM (singleton sonnet, reproduced): 7z backend never flagged symlink members (is_special hardcoded False) though py7zr exposes is_symlink -- they extracted as empty files, inflated count, skipped skipped_links, and made inspect() raise on escaping symlinks; now detected/skipped like zip/tar (no host-file disclosure since py7zr blocks escapes, hence MEDIUM not HIGH). LOW (opus NIT / haiku MEDIUM, converged): missing-member reads were inconsistent (zip/tar raw KeyError, 7z silent b'', single-file returned payload); normalised to uniform ArchiveReadError + documented, superseding the panel-2 leniency dismissal. NIT (opus): 7z solid-block compressed_size=0 -- same class as the documented tar limitation, extended that LIMITATIONS entry."
+    },
+    {
+      "id": "4",
+      "commits": ["d996e8c"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"LOW": 1},
+      "note": "Near-clean panel: sonnet and haiku found ZERO defects; opus found one LOW. LOW (singleton opus, reproduced): an encrypted-header 7z with a missing password was mislabeled with the generic 'corrupt or unsupported 7z archive' message (indistinguishable from a genuinely bad file) and surfaced at open time; now raises UnsupportedArchiveError naming the password cause, with the open() docstring amended. Wrong-password keeps the generic path (garbage-parse, indistinguishable from corruption). Read-only-unverified rar observations were noted but not actionable without the rar binary. First below-tau (clean) panel: weighted yield 1.0."
+    },
+    {
+      "id": "5",
+      "commits": ["7a17097"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 2, "NIT": 2},
+      "note": "Gate-deciding panel broke it open (yield non-monotonic 1.0 -> 6.4): proof that Panel 4's near-clean alone was not convergence, and why two consecutive clean panels are required. MEDIUM (opus, reproduced): 7z member with an interior '..' (docs/../report.txt) extracted as an EMPTY file -- silent data loss; py7zr writes the normalised path while read() reconstructed the raw name; fixed via os.path.normpath. LOW x2 (sonnet, reproduced): the ENAMETOOLONG class Panel 2 fixed for the non-flat path still crashed the flat-mode (_unique_basename) and recursive (_unique_dir) siblings -- the exact 'flat-mode crash that hid behind the non-flat one'; now recorded in skipped_unsafe / skipped_nested. NIT x2 (haiku, reproduced): ZIP and 7z open_stream returned a stream not None for directory members (interface-contract violation, no functional impact); fixed for symmetry. Clean streak RESET to 0."
+    },
+    {
+      "id": "6",
+      "commits": ["7db1582"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 1},
+      "note": "haiku clean. MEDIUM (opus, reproduced): the Panel-5 escape guard 'norm.startswith(\"..\")' over-matched legitimate basenames beginning with two dots (..notes.txt, ...txt, ..foo), reading them as b'' -- silent data loss, a NEW instance of the same class the guard fixed (a fix that spawned a sibling bug). Tightened to a true leading-'..' component check. LOW (sonnet, reproduced): overwrite=False misclassified a same-archive normalised duplicate as skipped_existing instead of skipped_collisions due to check order; reordered (written_targets before overwrite/exists). Data always correct. Clean streak still 0 -- a fix-induced MEDIUM and an audit-bucket LOW. AFTER this panel the 7z read path was ROOT-CAUSE refactored (commit d3cd07a) from extract-to-temp+path-reconstruction to an in-memory BytesIOFactory read keyed by py7zr's own member name, eliminating the whole data-loss class."
+    },
+    {
+      "id": "7",
+      "commits": ["ab4de25"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"LOW": 1},
+      "note": "First clean panel after the BytesIOFactory refactor; weighted yield 1.0 (below tau). opus attacked the refactored read path directly (factory key-mismatch surface, normalization-duplicate names, limit boundary, hostile names) and found ZERO -- evidence the mechanism change closed the recurring 7z seam. LOW (sonnet, reproduced): recursive 7z enforces max_member_bytes before the include/exclude filter (non-streaming members must be materialised to sniff for nesting); documented as an intentional cost-of-fix tradeoff. DISMISSED haiku 'HIGH' duplicate-member-name read: opus+sonnet independently judged it correct (by-name APIs cannot disambiguate duplicates; extraction records them in skipped_collisions, nothing lost); documented as a fundamental-ambiguity limitation. Both behaviours pinned with tests. Clean streak now 1 of 2."
+    },
+    {
+      "id": "8",
+      "commits": [],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {},
+      "note": "CLEAN at full diversity -- all three models found ZERO defects across a broad assault deliberately steered OFF the now-closed 7z seam onto safety.py (traversal/realpath/drive-letter/UNC/control), detect.py thresholds, cap enforcement at N vs N+1 with partial-result cleanup, artifacts four-corner tests, models invariants, CLI exit codes, and the single-file backends (sonnet alone ran ~35 real-input repros). The Panel-7 BytesIOFactory refactor held. Only the long-standing rar directory-member asymmetry was noted again as READ-ONLY-UNVERIFIED (no rar binary) -- not a confirmed finding. Second consecutive full-diversity clean panel: clean streak 2 of 2 -> release gate satisfied."
+    }
+  ]
+}

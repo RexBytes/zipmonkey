@@ -25,6 +25,13 @@ from zipmonkey.cli import _human_size, build_parser, main
         (1024 * 1024 * 1024, "1.0G"),
         (1024**4, "1.0T"),
         (1024**5, "1.0P"),
+        (1024**6, "1.0E"),
+        (1024**7, "1.0Z"),
+        (1024**8, "1.0Y"),
+        # regression: the carry guard used to give up at the last unit, so a
+        # value rounding to 1024.0 of the prior unit rendered "1024.0P".
+        (1_152_865_209_611_504_832, "1.0E"),
+        (2**63, "8.0E"),
     ],
 )
 def test_human_size(n, expected):
@@ -134,6 +141,23 @@ def test_cli_corrupt_zip_returns_1(tmp_path, capsys):
     bad = tmp_path / "bad.zip"
     bad.write_bytes(b"PK\x03\x04 corrupt not a real zip")
     rc = main(["inspect", str(bad)])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
+def test_cli_truncated_gzip_returns_1(tmp_path, capsys):
+    # A truncated gzip used to leak a raw EOFError past the CLI's handlers and
+    # exit via an uncaught traceback; it must now exit 1 with a friendly error.
+    import gzip
+    import os
+
+    whole = tmp_path / "full.gz"
+    with gzip.open(whole, "wb") as f:
+        f.write(os.urandom(50_000))
+    blob = whole.read_bytes()
+    trunc = tmp_path / "trunc.gz"
+    trunc.write_bytes(blob[: len(blob) // 2])
+    rc = main(["inspect", str(trunc)])
     assert rc == 1
     assert "error:" in capsys.readouterr().err
 

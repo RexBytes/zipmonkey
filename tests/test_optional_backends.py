@@ -169,6 +169,16 @@ def _make_7z(tmp_path, members: dict[str, bytes]):
     return archive
 
 
+def test_sevenzip_read_nested_member(tmp_path):
+    # Regression: py7zr >= 1.0 removed SevenZipFile.read(); reading a member
+    # (including one under a subdirectory) must still return its exact bytes
+    # across the 0.x/1.x API boundary.
+    archive = _make_7z(tmp_path, {"top.txt": b"hello", "sub/inner.csv": b"a,b\n"})
+    with zipmonkey.open(archive) as arc:
+        assert arc.read("top.txt") == b"hello"
+        assert arc.read("sub/inner.csv") == b"a,b\n"
+
+
 def test_sevenzip_extract(tmp_path):
     archive = _make_7z(tmp_path, {"a.csv": b"x,y\n1,2\n", "b.txt": b"hello"})
     res = zipmonkey.extract(archive, tmp_path / "out")
@@ -180,6 +190,204 @@ def test_sevenzip_include_filter(tmp_path):
     archive = _make_7z(tmp_path, {"a.csv": b"1", "b.log": b"2"})
     res = zipmonkey.extract(archive, tmp_path / "out", include="*.csv")
     assert {p.name for p in res.extracted} == {"a.csv"}
+
+
+def test_sevenzip_symlink_flagged_and_skipped(tmp_path):
+    # py7zr stores symlinks and exposes FileInfo.is_symlink; the 7z backend must
+    # flag them is_special and skip them on extraction, exactly like ZIP/tar —
+    # not materialise them as empty regular files (which inflated count and left
+    # skipped_links empty before this fix).
+    py7zr = pytest.importorskip("py7zr")
+    real = tmp_path / "r.txt"
+    real.write_bytes(b"content")
+    link = tmp_path / "s.txt"
+    link.symlink_to("r.txt")
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.write(real, "r.txt")
+        zf.write(link, "s.txt")
+
+    rep = zipmonkey.inspect(archive)
+    sym = next(e for e in rep.entries if e.name == "s.txt")
+    assert sym.is_special is True
+
+    res = zipmonkey.extract(archive, tmp_path / "out")
+    assert res.skipped_links == ["s.txt"]
+    assert res.count == 1  # only the real file is a leaf
+    assert {p.name for p in (tmp_path / "out").iterdir()} == {"r.txt"}
+    # A special member reads as empty, symmetric with tar/zip.
+    with zipmonkey.open(archive) as arc:
+        assert arc.read("s.txt") == b""
+
+
+def test_sevenzip_encrypted_header_missing_password_names_cause(tmp_path):
+    # An encrypted-header 7z needs the password just to LIST members, so a
+    # missing password surfaces at open time. It must name the password cause,
+    # not be folded into the generic "corrupt or unsupported" message that is
+    # indistinguishable from a genuinely bad file.
+    py7zr = pytest.importorskip("py7zr")
+    enc = tmp_path / "enc.7z"
+    with py7zr.SevenZipFile(enc, "w", password="secret") as zf:
+        zf.set_encrypted_header(True)
+        zf.writestr(b"hello", "f.txt")
+
+    with pytest.raises(UnsupportedArchiveError, match="password"):
+        zipmonkey.open(enc)
+    # The correct password still opens and reads it.
+    with zipmonkey.open(enc, password=b"secret") as arc:
+        assert arc.read("f.txt") == b"hello"
+
+
+def test_sevenzip_missing_member_raises(tmp_path):
+    archive = _make_7z(tmp_path, {"a.txt": b"hi"})
+    with zipmonkey.open(archive) as arc:
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.read("nope.txt")
+
+
+def test_sevenzip_duplicate_member_name_read_one_extract_records_collision(tmp_path):
+    # Documented limitation: read-by-name returns one member for a duplicated
+    # name (no key disambiguates them); extraction preserves both -- first wins,
+    # the later duplicate is recorded in skipped_collisions (nothing is lost).
+    py7zr = pytest.importorskip("py7zr")
+    archive = tmp_path / "dup.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(b"ALICE"), "f.txt")
+        zf.writef(io.BytesIO(b"BOB"), "f.txt")
+    with zipmonkey.open(archive) as arc:
+        assert len(arc.entries()) == 2
+        assert arc.read("f.txt") == b"ALICE"  # by-name resolves to the first
+    res = zipmonkey.extract(archive, tmp_path / "out")
+    assert res.count == 1
+    assert res.skipped_collisions == ["f.txt"]
+
+
+def test_sevenzip_recursive_filter_applies_before_cap(tmp_path):
+    # Recursive 7z detects nested archives by EXTENSION (looks_like_archive), so
+    # it never materialises a member just to sniff it. A filtered, over-cap
+    # member is therefore dropped by the filter and does NOT trip max_member_bytes
+    # -- uniform with the streaming ZIP/tar backends (this used to raise a
+    # spurious ArchiveLimitError; the extension-based detection removed that).
+    py7zr = pytest.importorskip("py7zr")
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(b"\x00" * 1000), "big.bin")
+        zf.writef(io.BytesIO(b"x,y\n"), "keep.csv")
+    for sub in ("nr", "r"):
+        res = zipmonkey.extract(
+            archive,
+            tmp_path / sub,
+            recursive=(sub == "r"),
+            include="*.csv",
+            max_member_bytes=500,
+        )
+        assert res.skipped_filtered == ["big.bin"]
+        assert res.count == 1
+
+
+def test_sevenzip_recursive_nesting_detected_by_extension(tmp_path):
+    # A nested .7z inside a 7z is unpacked (extension matches); a nested archive
+    # stored under a NON-archive extension is treated as a leaf (the deliberate
+    # tradeoff of content-free, no-materialise detection for the 7z backend).
+    py7zr = pytest.importorskip("py7zr")
+    inner = tmp_path / "inner.7z"
+    with py7zr.SevenZipFile(inner, "w") as zf:
+        zf.writef(io.BytesIO(b"LEAF"), "leaf.txt")
+    outer = tmp_path / "outer.7z"
+    with py7zr.SevenZipFile(outer, "w") as zf:
+        zf.write(inner, "inner.7z")           # archive extension -> recursed
+        zf.write(inner, "renamed.bin")        # non-archive extension -> leaf
+    res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
+    assert [p.name for p in res.nested_extracted] == ["inner.7z"]
+    assert "renamed.bin" in {p.name for p in res.extracted}
+
+
+def test_sevenzip_read_keyed_by_member_name_no_path_reconstruction(tmp_path):
+    # The 7z read path captures each member into memory keyed by py7zr's own
+    # member name (no temp-file path reconstruction). Pin the mechanism over a
+    # spread of adversarial names -- interior "..", dot-prefixed basenames,
+    # nested dirs, unicode, empty -- each must round-trip its exact bytes. The
+    # two historical silent-data-loss defects both lived in the old
+    # reconstruct-Path(td)/name strategy this replaced.
+    py7zr = pytest.importorskip("py7zr")
+    import io
+
+    cases = {
+        "docs/../report.txt": b"R" * 42,
+        "..notes.txt": b"DOTDOT",
+        "...x": b"TRIPLE",
+        "a/b/c/deep.bin": b"NESTED" * 100,
+        "uniéñ.txt": b"UNICODE",
+        "empty.txt": b"",
+    }
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        for name, data in cases.items():
+            zf.writef(io.BytesIO(data), name)
+
+    with zipmonkey.open(archive) as arc:
+        for name, data in cases.items():
+            assert arc.read(name) == data, name
+    # And extraction writes the true bytes, not silently-empty files.
+    zipmonkey.extract(archive, tmp_path / "out")
+    on_disk = {
+        p.read_bytes() for p in (tmp_path / "out").rglob("*") if p.is_file()
+    }
+    assert {d for d in cases.values() if d} <= on_disk
+
+
+@pytest.mark.parametrize("dotname", ["..notes.txt", "...txt", "..foo"])
+def test_sevenzip_dotdot_prefixed_basename_not_lost(tmp_path, dotname):
+    # The interior-".." escape guard must reject only a genuine leading ".."
+    # path component, NOT a legitimate basename that merely begins with two
+    # dots -- those used to read as b"" (silent data loss), the same class the
+    # guard was added to prevent.
+    py7zr = pytest.importorskip("py7zr")
+    import io
+
+    payload = b"REAL_USER_DATA_" + dotname.encode()
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(payload), dotname)
+    with zipmonkey.open(archive) as arc:
+        assert arc.read(dotname) == payload
+    zipmonkey.extract(archive, tmp_path / "out")
+    written = [p for p in (tmp_path / "out").rglob("*") if p.is_file()]
+    assert [p.read_bytes() for p in written] == [payload]
+
+
+def test_sevenzip_interior_dotdot_member_reads_full_content(tmp_path):
+    # py7zr writes a member to its NORMALISED path, so a member stored as
+    # "docs/../report.txt" lands at "report.txt". Reconstructing the raw name
+    # used to look in a directory that was never created and silently return
+    # b"" -- extracting a 0-byte file (silent data loss). The full bytes must
+    # come back, and the extracted file must match the declared size.
+    py7zr = pytest.importorskip("py7zr")
+    payload = b"X" * 42
+    src = tmp_path / "report.txt"
+    src.write_bytes(payload)
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.write(src, "docs/../report.txt")
+
+    with zipmonkey.open(archive) as arc:
+        assert arc.read("docs/../report.txt") == payload
+    res = zipmonkey.extract(archive, tmp_path / "out")
+    assert res.skipped_unsafe == []  # re-roots in-bounds, not unsafe
+    written = [p for p in (tmp_path / "out").rglob("*") if p.is_file()]
+    assert [p.read_bytes() for p in written] == [payload]
+
+
+def test_sevenzip_directory_open_stream_returns_none(tmp_path):
+    # The _Backend.open_stream contract returns None for directory members.
+    py7zr = pytest.importorskip("py7zr")
+    d = tmp_path / "src" / "sub"
+    d.mkdir(parents=True)
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.write(tmp_path / "src" / "sub", "sub")
+    with zipmonkey.open(archive) as arc:
+        assert arc._backend.open_stream("sub") is None
 
 
 def test_sevenzip_byte_cap_preflight(tmp_path):

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zipmonkey"
-version = "0.1.0"
+version = "1.0.0"
 description = "Smart archive inspection and extraction: OS-artifact cleanup, recursive unpacking, type detection, and selective extraction over ZIP/tar."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -12,7 +12,7 @@ authors = [{ name = "RexBytes", email = "pythonic@rexbytes.com" }]
 requires-python = ">=3.11"
 keywords = ["zip", "tar", "archive", "extract", "unzip", "nested", "recursive"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
@@ -25,7 +25,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-sevenzip = ["py7zr>=0.20"]
+sevenzip = ["py7zr>=0.20,<2"]
 rar = ["rarfile>=4.0"]
 dev = [
     "pytest>=7.0",

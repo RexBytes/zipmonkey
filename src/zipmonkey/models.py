@@ -26,8 +26,9 @@ class ArchiveEntry:
         is_artifact: True when the member is an OS-generated junk file
             (see :func:`zipmonkey.artifacts.is_os_artifact`).
         is_special: True when the member is neither a regular file nor a
-            directory — a symlink, hardlink, device, or FIFO (only tar stores
-            these). Special members are skipped during extraction rather than
+            directory — a symlink, hardlink, device, or FIFO. Detected across
+            every backend that can store them (tar links/devices, ZIP/7z/rar
+            symlinks). Special members are skipped during extraction rather than
             materialised.
         detected_type: A short type label (e.g. ``"csv"``, ``"pdf"``,
             ``"zip"``) inferred from magic bytes, or ``None`` when not
@@ -130,8 +131,10 @@ class ExtractResult:
         skipped_filtered: Member names skipped because of include/exclude
             filters.
         skipped_unsafe: Member names skipped because their target path
-            escaped ``dest`` (path-traversal protection) or contained
-            NUL/control characters.
+            could not be safely placed under ``dest``: it escaped ``dest``
+            (path-traversal protection), contained NUL/control characters, or
+            was rejected by the filesystem (e.g. a path component exceeded the
+            maximum name length).
         skipped_collisions: Member names skipped because their target path
             collided with an already-written file/directory of the same name
             (an archive containing both ``foo`` and ``foo/bar`` cannot place

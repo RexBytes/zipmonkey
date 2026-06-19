@@ -48,8 +48,8 @@ def safe_target(dest: Path, member_name: str) -> Path | None:
     Absolute member paths (``/etc/passwd``) are **re-rooted** under ``dest``
     (the leading separator is stripped), matching the long-standing behaviour
     of ``zipfile`` and ``tar``. Windows drive specifiers (``C:...``), ``..``
-    escapes, NUL/control characters, and members resolving to ``dest`` itself
-    are **rejected** (returning ``None``).
+    escapes, control characters (code points below 32 and DEL 127), and members
+    resolving to ``dest`` itself are **rejected** (returning ``None``).
 
     Args:
         dest: The extraction root. Need not exist yet; its existing prefix is
@@ -66,8 +66,9 @@ def safe_target(dest: Path, member_name: str) -> Path | None:
     if not normalized or normalized == ".":
         return None
 
-    # Reject NUL and other control characters that break path APIs / smuggle.
-    if any(ord(ch) < 32 for ch in normalized):
+    # Reject NUL and other control characters (C0 range plus DEL) that break
+    # path APIs / smuggle.
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in normalized):
         return None
 
     # Reject Windows drive specifiers (e.g. "C:foo") that os.path.join honours.

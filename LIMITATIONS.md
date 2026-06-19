@@ -30,15 +30,21 @@ describes only the current library.
 - **Rationale:** Determining that a gzip stream wraps a tar (versus a single file) requires decompressing and parsing the stream — that is the archive layer's job, not a byte-sniff. `Archive.format` (which *does* open the stream) reports `"tar.gz"` correctly.
 - **Escape hatch:** Use `zipmonkey.open(path).format` for the resolved compound format.
 
+### Reading a duplicate member name returns one (unspecified) member
+- **Concern:** An archive with two members of the same name (e.g. two `f.txt`) returns only one of them from `read("f.txt")`/`open_member("f.txt")` — the first for 7z, the last for ZIP/tar.
+- **Decision:** `read`/`open_member` are by-*name* lookups; for a duplicated name they return whichever member that name resolves to in the underlying library (first vs last differs by backend). Full fidelity is the *extraction* path's job.
+- **Rationale:** A by-name API cannot return two different members for one name — there is no key to disambiguate them, and which one is "correct" has no content-independent answer. Inventing positional/index access would bloat the API for a rare, malformed input. Extraction *does* preserve every member: the first is written and each later duplicate is recorded in `ExtractResult.skipped_collisions`, so nothing is silently lost.
+- **Escape hatch:** Use `extract()` and inspect `skipped_collisions`, or open the archive with the underlying library (`zipfile`/`tarfile`/`py7zr`) and iterate members positionally.
+
 ---
 
 ## Cost-of-fix exceeds value
 
-### Tar members have no per-member compressed size
-- **Concern:** For tar/tar.gz archives, every `ArchiveEntry.compressed_size` is `0`, so `InspectReport.compression_ratio` reads `0.00`.
-- **Decision:** Report `0` compressed size for tar members and let the ratio reflect it.
-- **Rationale:** Tar compresses the *whole stream*, not individual members, so there is no per-member compressed size to report — the information does not exist in the format. Synthesising a plausible-looking number (e.g. prorating the stream size) would invent data the format never recorded. `ArchiveEntry.size` (uncompressed) is always accurate.
-- **Escape hatch:** For an overall figure, compare `os.path.getsize(archive)` against `InspectReport.total_size` yourself.
+### Tar members (and 7z solid-block members) have no per-member compressed size
+- **Concern:** For tar/tar.gz archives every `ArchiveEntry.compressed_size` is `0` (so `InspectReport.compression_ratio` reads `0.00`); for 7z archives written as a *solid* block, py7zr attributes the whole block's packed size to the first member and reports `0` for the rest, so those members also read `ratio 0.00`.
+- **Decision:** Report whatever per-member compressed size the format/library exposes (`0` for tar members and trailing 7z solid-block members) and let the ratio reflect it.
+- **Rationale:** Tar compresses the *whole stream* and 7z compresses a *whole solid block*, not individual members, so there is no per-member compressed size to report — the information does not exist at that granularity. Synthesising a plausible-looking number (e.g. prorating the stream size) would invent data the format never recorded. `ArchiveEntry.size` (uncompressed) is always accurate, and the archive's overall ratio is meaningful.
+- **Escape hatch:** For an overall figure, compare `os.path.getsize(archive)` against `InspectReport.total_size` yourself; write 7z non-solid if you need per-member compressed sizes.
 
 ### Inspecting a standalone gzip/bzip2/xz streams the whole payload to size it
 - **Concern:** `inspect("huge.gz")` reads the entire decompressed stream to report `total_size`, with no inspect-time byte cap — slow for very large single-file streams.
@@ -51,6 +57,12 @@ describes only the current library.
 - **Decision:** Accept whole-member materialisation for 7z and guard it with a *declared-size preflight* (the member's header size is checked against `max_total_bytes` before any decompression), plus the `_Backend.streaming = False` flag.
 - **Rationale:** `py7zr` exposes only whole-member decompression (`read()` returns a `BytesIO`); there is no public chunked/callback API to stream against. The preflight rejects oversized members before they are decompressed, closing the declared-bomb hole; the residual cost is in-memory size for an *honestly-declared* large member, which only affects callers who opt into 7z. Core stdlib formats are unaffected.
 - **Escape hatch:** For untrusted/large 7z, set `max_member_bytes` (a per-member cap that rejects an oversized member before it is decompressed) and/or a small `max_total_bytes`, pass `detect_types=False` to `inspect`, or extract members individually with your own preflight via `Archive.entries()` + `Archive.open_member`.
+
+### Recursive 7z detects nested archives by extension, not content
+- **Concern:** With `recursive=True`, a nested archive stored *inside* a 7z under a non-archive name (e.g. a real zip stored as `payload.bin`) is treated as a leaf and not unpacked — whereas the ZIP/tar backends would sniff its magic bytes and recurse.
+- **Decision:** For the non-streaming 7z backend, decide "is this a nested archive?" from the member's *extension* (`looks_like_archive`), not by peeking its content; streaming backends (ZIP/tar) still sniff by magic.
+- **Rationale:** Peeking a 7z member materialises the *whole* member (py7zr has no streaming API). Sniffing every member that way would decompress members that a leaf filter or the `max_member_bytes` cap should have excluded — which previously made an over-cap, would-be-filtered member raise a spurious `ArchiveLimitError`. Extension-based detection never materialises a member just to classify it, so the filter and caps behave uniformly across all backends. The cost is a mis-named nested 7z member going unrecursed; in practice nested archives carry their real extension, and the member is still extracted as a leaf (no data lost) — you can re-run extraction on it.
+- **Escape hatch:** Re-run `extract(recursive=True)` on the leaf path, or extract that member and open it directly.
 
 ### Extraction is not TOCTOU-race-proof against a hostile concurrent writer
 - **Concern:** `safe_target` resolves symlinks in the existing `dest` prefix before writing, but another process mutating the `dest` tree *during* extraction could in principle defeat the check (a time-of-check/time-of-use race).

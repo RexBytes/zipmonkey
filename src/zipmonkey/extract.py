@@ -46,7 +46,17 @@ def extract(
 
     Returns:
         An :class:`~zipmonkey.models.ExtractResult`.
+
+    Raises:
+        TypeError: If ``dest`` is ``None``. (The auto-cleanup temp-dir mode is
+            only available via the context manager, since this convenience
+            function would delete the temp dir on return and leave dead paths.)
     """
+    if dest is None:
+        raise TypeError(
+            "dest is required for zipmonkey.extract(); for an auto-cleaned "
+            "temp dir use 'with zipmonkey.open(path) as arc: arc.extract()'"
+        )
     with Archive(path, password=password) as arc:
         return arc.extract(
             dest,
