@@ -32,6 +32,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"MEDIUM": 1, "LOW": 1, "NIT": 1},
       "note": "MEDIUM (singleton sonnet, reproduced): 7z backend never flagged symlink members (is_special hardcoded False) though py7zr exposes is_symlink -- they extracted as empty files, inflated count, skipped skipped_links, and made inspect() raise on escaping symlinks; now detected/skipped like zip/tar (no host-file disclosure since py7zr blocks escapes, hence MEDIUM not HIGH). LOW (opus NIT / haiku MEDIUM, converged): missing-member reads were inconsistent (zip/tar raw KeyError, 7z silent b'', single-file returned payload); normalised to uniform ArchiveReadError + documented, superseding the panel-2 leniency dismissal. NIT (opus): 7z solid-block compressed_size=0 -- same class as the documented tar limitation, extended that LIMITATIONS entry."
+    },
+    {
+      "id": "4",
+      "commits": ["d996e8c"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"LOW": 1},
+      "note": "Near-clean panel: sonnet and haiku found ZERO defects; opus found one LOW. LOW (singleton opus, reproduced): an encrypted-header 7z with a missing password was mislabeled with the generic 'corrupt or unsupported 7z archive' message (indistinguishable from a genuinely bad file) and surfaced at open time; now raises UnsupportedArchiveError naming the password cause, with the open() docstring amended. Wrong-password keeps the generic path (garbage-parse, indistinguishable from corruption). Read-only-unverified rar observations were noted but not actionable without the rar binary. First below-tau (clean) panel: weighted yield 1.0."
     }
   ]
 }

@@ -14,22 +14,21 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 3 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 8 — 0 CRITICAL, 1 HIGH, 4 MEDIUM, 2 LOW, 1 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 (decaying, rate 0.35) |
-| Tests | 260 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~244 passing / 5 skipped |
-| Release-Readiness Score | 79.2 / 100 |
-| Convergence | clean streak 0 of 2 required; confidence 0.00; rate 0.35 |
-| Verdict | NOT RELEASABLE — RRS 79.2 < 90, and no full-diversity clean panels yet |
+| Multi-model review panels | 4 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 9 — 0 CRITICAL, 1 HIGH, 4 MEDIUM, 3 LOW, 1 NIT |
+| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 (decaying, rate 0.07) |
+| Tests | 261 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~245 passing / 5 skipped |
+| Release-Readiness Score | 90.6 / 100 |
+| Convergence | clean streak 1 of 2 required; confidence 0.63; rate 0.07 |
+| Verdict | NOT RELEASABLE — gates green and RRS ≥ 90, but need 1 more consecutive clean panel |
 
-> Three panels in, the severity-weighted yield is decaying steadily
-> (15.0 → 8.0 → 5.2) and the findings are getting shallower (Panel 3's only
-> finding above LOW was a single 7z-symlink MEDIUM), but every panel has still
-> surfaced at least one real defect, so the clean streak is 0. The release rule
-> needs two consecutive full-diversity panels that come back clean (nothing
-> above LOW). The hard gates are all green; the block is the (correctly) unmet
-> convergence/RRS bar, not a known-open defect. The 7z backend (the newest, least
-> symmetric surface) has now yielded a finding in all three panels.
+> Four panels in, the package has crossed RRS ≥ 90 and recorded its **first
+> below-tau (clean) panel**: Panel 4 returned only a single LOW (two of three
+> models found nothing). The yield has decayed 15.0 → 8.0 → 5.2 → 1.0. The sole
+> remaining blocker is the clean-streak rule — it requires **two consecutive**
+> full-diversity panels with nothing above LOW, and we now have one. One more
+> clean panel makes this RELEASABLE. The hard gates are all green; there is no
+> known-open defect.
 
 ## Trajectory
 
@@ -40,6 +39,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 1 | 1 HIGH, 1 MEDIUM, 1 LOW | 15.0 | Optional-dependency API break + backend symmetry gaps |
 | 2 | 2 MEDIUM | 8.0 | Error-normalisation gaps on the single-file backend (truncated streams; over-long names) |
 | 3 | 1 MEDIUM, 1 LOW, 1 NIT | 5.2 | 7z symlink detection; uniform missing-member contract |
+| 4 | 1 LOW | 1.0 | Encrypted-header 7z password mislabel (first clean panel) |
 
 ## What each panel found and how it was fixed
 
@@ -107,6 +107,21 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   - **NIT (opus).** 7z solid-block members report `compressed_size=0` — the same
     class as the documented tar limitation. Extended that `LIMITATIONS.md` entry
     to cover 7z solid blocks rather than inventing a per-member number.
+
+- **4 — encrypted-header 7z password message; first clean panel (commit
+  `d996e8c`).** sonnet and haiku found **zero** defects; opus found one **LOW**:
+  a 7z written with an *encrypted header* needs the password just to list
+  members, so a missing password was folded into the generic "corrupt or
+  unsupported 7z archive" message — indistinguishable from a genuinely bad file
+  — and surfaced at open time. Fixed to raise `UnsupportedArchiveError` naming
+  the password cause, with the `open()` docstring amended for the carve-out. A
+  *wrong* password yields a garbage-parse error genuinely indistinguishable from
+  corruption, so it keeps the generic message (documented in code). Opus and
+  sonnet also raised **read-only-unverified** rar observations (a directory
+  `open_stream` asymmetry; a shared-filename special-set guard) — not
+  reproducible without the `rar` binary, so per the rules of evidence they were
+  not acted on; recorded here as known-unverified to revisit if the rar content
+  path becomes testable.
 
 ## Standing themes
 
