@@ -220,6 +220,24 @@ def test_sevenzip_symlink_flagged_and_skipped(tmp_path):
         assert arc.read("s.txt") == b""
 
 
+def test_sevenzip_encrypted_header_missing_password_names_cause(tmp_path):
+    # An encrypted-header 7z needs the password just to LIST members, so a
+    # missing password surfaces at open time. It must name the password cause,
+    # not be folded into the generic "corrupt or unsupported" message that is
+    # indistinguishable from a genuinely bad file.
+    py7zr = pytest.importorskip("py7zr")
+    enc = tmp_path / "enc.7z"
+    with py7zr.SevenZipFile(enc, "w", password="secret") as zf:
+        zf.set_encrypted_header(True)
+        zf.writestr(b"hello", "f.txt")
+
+    with pytest.raises(UnsupportedArchiveError, match="password"):
+        zipmonkey.open(enc)
+    # The correct password still opens and reads it.
+    with zipmonkey.open(enc, password=b"secret") as arc:
+        assert arc.read("f.txt") == b"hello"
+
+
 def test_sevenzip_missing_member_raises(tmp_path):
     archive = _make_7z(tmp_path, {"a.txt": b"hi"})
     with zipmonkey.open(archive) as arc:

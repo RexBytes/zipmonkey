@@ -366,8 +366,20 @@ class _SevenZipBackend(_Backend):
         self._py7zr = py7zr
         self._path = path
         self._password = pwd
-        with py7zr.SevenZipFile(path, mode="r", password=pwd) as zf:
-            self._info = list(zf.list())
+        try:
+            with py7zr.SevenZipFile(path, mode="r", password=pwd) as zf:
+                self._info = list(zf.list())
+        except py7zr.exceptions.PasswordRequired as exc:
+            # An encrypted-header 7z needs the password just to list members, so
+            # this surfaces at open time. Name the cause instead of letting
+            # _build_optional fold it into the generic "corrupt or unsupported"
+            # message (which a caller cannot tell apart from a genuinely bad
+            # file). A WRONG password instead yields a garbage-parse error that
+            # is indistinguishable from corruption, so it keeps the generic path.
+            raise UnsupportedArchiveError(
+                f"7z archive has an encrypted header and requires a password: "
+                f"{path}"
+            ) from exc
         self._names = {item.filename for item in self._info}
         # py7zr exposes FileInfo.is_symlink; flag those as special so they are
         # skipped (not materialised) and read as empty, exactly like the ZIP/tar
@@ -1313,8 +1325,10 @@ def open(path: str | Path, *, password: bytes | None = None) -> Archive:  # noqa
     Args:
         path: Path to the archive file.
         password: Optional password as bytes (ZIP/7z/rar). A wrong or missing
-            password surfaces as an error from the underlying library at read
-            time, not at open time.
+            password normally surfaces at read time, not at open time. The one
+            exception is a 7z archive written with an *encrypted header*: listing
+            its members already needs the key, so a missing password raises
+            UnsupportedArchiveError (naming the password cause) at open time.
 
     Returns:
         An open :class:`Archive`.
