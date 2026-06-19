@@ -1153,7 +1153,9 @@ class Archive:
                         if not backend.streaming and not _passes_filter(
                             e.name, ctx.include, ctx.exclude
                         ):
-                            self._unwrite_filtered_leaf(e.name, target, ctx, result)
+                            self._unwrite_filtered_leaf(
+                                e.name, target, ctx, result, flat_used
+                            )
                         else:
                             result.extracted.append(target)
                 else:
@@ -1162,7 +1164,12 @@ class Archive:
                 result.extracted.append(target)
 
     def _unwrite_filtered_leaf(
-        self, name: str, target: Path, ctx: _Ctx, result: ExtractResult
+        self,
+        name: str,
+        target: Path,
+        ctx: _Ctx,
+        result: ExtractResult,
+        flat_used: set[str],
     ) -> None:
         """Undo a member written only to attempt an archive open, then record it
         as filtered.
@@ -1170,7 +1177,10 @@ class Archive:
         Used when a non-streaming member was extension-classified as a container
         (so it skipped the leaf filter and was written so it could be opened) but
         turned out to be an ordinary leaf that the filter excludes. Removes the
-        file and returns the file/byte budget it consumed.
+        file and returns *all* the state it consumed: the file/byte budget, its
+        ``written_targets`` entry, and (in flat mode) its ``flat_used`` basename
+        reservation -- otherwise a later legitimately-named member would be
+        spuriously renamed ``name (1)`` even though the basename is free on disk.
         """
         try:
             written = target.stat().st_size
@@ -1180,6 +1190,8 @@ class Archive:
         ctx.file_count -= 1
         ctx.total_bytes -= written
         ctx.written_targets.discard(target)
+        if ctx.flat:
+            flat_used.discard(target.name)
         result.skipped_filtered.append(name)
 
     def _target_for(

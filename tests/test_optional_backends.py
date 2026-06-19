@@ -464,3 +464,31 @@ def test_sevenzip_recursive_non_archive_decoy_name_honours_filter(tmp_path):
     # No filter: the decoy is still kept as a leaf (unchanged behaviour).
     res3 = zipmonkey.extract(archive, tmp_path / "all", recursive=True)
     assert {p.name for p in res3.extracted} == {"decoy.zip", "wanted.txt"}
+
+
+def test_sevenzip_flat_decoy_releases_basename_reservation(tmp_path):
+    # Regression (sibling of the Panel-9 decoy fix): in flat mode, a filtered-out
+    # decoy (extension-classified container that turns out to be a leaf) must
+    # release its flat-mode basename reservation when unwritten -- otherwise a
+    # later legitimately-named member is spuriously renamed "name (1)" even
+    # though the basename is free on disk.
+    py7zr = pytest.importorskip("py7zr")
+    import zipfile
+
+    realzip = tmp_path / "real.zip"
+    with zipfile.ZipFile(realzip, "w") as zf:
+        zf.writestr("payload.txt", b"PAYLOAD")
+    archive = tmp_path / "o.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(b"plain text decoy"), "dirA/decoy.zip")  # text, filtered
+        zf.write(realzip, "dirB/decoy.zip")  # real zip, same basename
+
+    res = zipmonkey.extract(
+        archive, tmp_path / "out", flat=True, recursive=True, exclude="*.zip"
+    )
+    assert res.skipped_filtered == ["dirA/decoy.zip"]
+    # The real nested archive keeps the freed basename, not "decoy (1).zip".
+    assert {p.name for p in (tmp_path / "out").iterdir()} == {
+        "decoy.zip",
+        "payload.txt",
+    }
