@@ -698,7 +698,11 @@ def _passes_filter(
 
 
 def _split_ext(basename: str) -> tuple[str, str]:
-    dot = basename.rfind(".")
+    # Find the split on the trailing-dot-stripped name, matching detect._extension
+    # ("report.xlsx." -> ".xlsx", "file." -> no extension), so a collision suffix
+    # never lands on a bare trailing dot (e.g. "file." -> "file. (1)", not
+    # "file (1).").
+    dot = basename.rstrip(".").rfind(".")
     if dot > 0:
         return basename[:dot], basename[dot:]
     return basename, ""
