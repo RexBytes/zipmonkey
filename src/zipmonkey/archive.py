@@ -15,9 +15,9 @@ import errno
 import fnmatch
 import gzip
 import lzma
-import os
 import shutil
 import stat
+import sys
 import tarfile
 import tempfile
 import zipfile
@@ -416,52 +416,42 @@ class _SevenZipBackend(_Backend):
         return out
 
     def read(self, name: str) -> bytes:
-        # Special members (symlinks) read as empty, symmetric with tar/zip — and
-        # this also avoids extracting a symlink that py7zr would refuse or follow.
-        if name in self._specials:
+        # Directory and special (symlink) members have no content -> b"",
+        # symmetric with tar/zip; this also avoids extracting a symlink that
+        # py7zr would refuse or follow.
+        if name in self._dirs or name in self._specials:
             return b""
         # py7zr corrupt-member / bad-password errors subclass Exception (not in
         # _READ_ERRORS); normalise them here so the read contract holds. peek
         # and open_stream both route through read, so this covers them too.
-        #
-        # py7zr >= 1.0 removed SevenZipFile.read()/readall(); extract(targets=)
-        # is the one content API stable across 0.x and 1.x, so extract just this
-        # member to a throwaway temp dir and read it back. A directory member
-        # yields no file, so it reads as b"" (the read contract).
-        import tempfile
-
         try:
             if name not in self._names:
                 # Missing member: raise so it normalises to ArchiveReadError,
-                # rather than silently returning b"" (which py7zr's targeted
-                # extract would do, masking "missing" as "empty").
+                # rather than masking "missing" as "empty".
                 raise KeyError(name)
-            with tempfile.TemporaryDirectory() as td:
-                with self._py7zr.SevenZipFile(
-                    self._path, mode="r", password=self._password
-                ) as zf:
-                    zf.extract(path=td, targets=[name])
-                # py7zr writes a member to its NORMALISED path (it collapses an
-                # interior "docs/../report.txt" to "report.txt"), so reconstruct
-                # the same normalised path — joining the raw name would look for
-                # a file that was never written there and silently read b"".
-                norm = os.path.normpath(name)
-                # Reject only a genuine parent-traversal component. A bare
-                # `norm.startswith("..")` would also swallow legitimate basenames
-                # that merely begin with two dots ("..notes.txt", "...txt"),
-                # silently reading them as b"" -- the same data-loss class this
-                # guard exists to prevent. A real escape normalises to exactly
-                # ".." or "../...".
-                if os.path.isabs(norm) or norm == ".." or norm.startswith(
-                    ".." + os.sep
-                ):
-                    # Would resolve outside the temp dir; py7zr refuses to write
-                    # such members anyway, so there is nothing to read.
-                    return b""
-                target = Path(td) / norm
-                return target.read_bytes() if target.is_file() else b""
+            return self._read_member(name)
         except Exception as exc:
             raise _as_read_error(name, exc) from exc
+
+    def _read_member(self, name: str) -> bytes:
+        # py7zr >= 1.0 removed SevenZipFile.read()/readall(). Capture the member
+        # straight into memory via BytesIOFactory, keyed by py7zr's OWN member
+        # name -- no temp files and no path reconstruction. The previous
+        # extract-to-temp-then-Path(td)/name approach had to re-derive py7zr's
+        # on-disk normalisation and silently returned b"" whenever the guess was
+        # wrong (interior "..", or basenames beginning with dots): two distinct
+        # silent-data-loss defects. Reading by the archive's own member name has
+        # no such gap. py7zr 0.x lacks the factory but still has read().
+        py7zr = self._py7zr
+        factory_cls = getattr(getattr(py7zr, "io", None), "BytesIOFactory", None)
+        with py7zr.SevenZipFile(
+            self._path, mode="r", password=self._password
+        ) as zf:
+            if factory_cls is not None:
+                factory = factory_cls(limit=sys.maxsize)
+                zf.extract(targets=[name], factory=factory)
+                return factory.get(name).read()
+            return zf.read([name])[name].read()  # py7zr 0.x
 
     def peek(self, name: str, n: int) -> bytes:
         return self.read(name)[:n]

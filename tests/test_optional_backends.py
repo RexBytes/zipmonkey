@@ -245,6 +245,40 @@ def test_sevenzip_missing_member_raises(tmp_path):
             arc.read("nope.txt")
 
 
+def test_sevenzip_read_keyed_by_member_name_no_path_reconstruction(tmp_path):
+    # The 7z read path captures each member into memory keyed by py7zr's own
+    # member name (no temp-file path reconstruction). Pin the mechanism over a
+    # spread of adversarial names -- interior "..", dot-prefixed basenames,
+    # nested dirs, unicode, empty -- each must round-trip its exact bytes. The
+    # two historical silent-data-loss defects both lived in the old
+    # reconstruct-Path(td)/name strategy this replaced.
+    py7zr = pytest.importorskip("py7zr")
+    import io
+
+    cases = {
+        "docs/../report.txt": b"R" * 42,
+        "..notes.txt": b"DOTDOT",
+        "...x": b"TRIPLE",
+        "a/b/c/deep.bin": b"NESTED" * 100,
+        "uniéñ.txt": b"UNICODE",
+        "empty.txt": b"",
+    }
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        for name, data in cases.items():
+            zf.writef(io.BytesIO(data), name)
+
+    with zipmonkey.open(archive) as arc:
+        for name, data in cases.items():
+            assert arc.read(name) == data, name
+    # And extraction writes the true bytes, not silently-empty files.
+    zipmonkey.extract(archive, tmp_path / "out")
+    on_disk = {
+        p.read_bytes() for p in (tmp_path / "out").rglob("*") if p.is_file()
+    }
+    assert {d for d in cases.values() if d} <= on_disk
+
+
 @pytest.mark.parametrize("dotname", ["..notes.txt", "...txt", "..foo"])
 def test_sevenzip_dotdot_prefixed_basename_not_lost(tmp_path, dotname):
     # The interior-".." escape guard must reject only a genuine leading ".."
