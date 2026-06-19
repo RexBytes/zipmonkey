@@ -432,3 +432,35 @@ def test_rar_missing_dep_raises(tmp_path, monkeypatch):
     monkeypatch.setattr(builtins, "__import__", fake_import)
     with pytest.raises(UnsupportedArchiveError, match="rarfile"):
         _RarBackend(tmp_path / "x.rar", None)
+
+
+def test_sevenzip_recursive_non_archive_decoy_name_honours_filter(tmp_path):
+    # Regression: the 7z extension-based nested detection presumes a member named
+    # like an archive is a container, so it bypassed the leaf filter. A plain
+    # file named "decoy.zip" failed to open as an archive and was extracted as a
+    # leaf even when a filter excluded it. It must now be filtered (and removed),
+    # matching the content-sniffing ZIP/tar backends -- while a REAL nested 7z is
+    # still always traversed.
+    py7zr = pytest.importorskip("py7zr")
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(b"plain text, not a zip"), "decoy.zip")
+        zf.writef(io.BytesIO(b"hello"), "wanted.txt")
+
+    res = zipmonkey.extract(
+        archive, tmp_path / "inc", recursive=True, include="*.txt"
+    )
+    assert [p.name for p in res.extracted] == ["wanted.txt"]
+    assert res.skipped_filtered == ["decoy.zip"]
+    assert not (tmp_path / "inc" / "decoy.zip").exists()  # removed, not left behind
+    assert res.written_count == 1  # accounting unwound
+
+    # exclude direction too
+    res2 = zipmonkey.extract(
+        archive, tmp_path / "exc", recursive=True, exclude="*.zip"
+    )
+    assert res2.skipped_filtered == ["decoy.zip"]
+
+    # No filter: the decoy is still kept as a leaf (unchanged behaviour).
+    res3 = zipmonkey.extract(archive, tmp_path / "all", recursive=True)
+    assert {p.name for p in res3.extracted} == {"decoy.zip", "wanted.txt"}

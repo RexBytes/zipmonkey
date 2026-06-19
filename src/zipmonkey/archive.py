@@ -1134,8 +1134,8 @@ class Archive:
             if is_arc:
                 if ctx.max_depth <= 0 or depth + 1 <= ctx.max_depth:
                     # _recurse_one records the container in nested_extracted as
-                    # soon as it opens; a False return means archive magic but
-                    # not a valid archive, so it is really a leaf.
+                    # soon as it opens; a False return means it did not open as a
+                    # valid archive, so it is really a leaf.
                     if not self._recurse_one(
                         archive_path=target,
                         top_dest=dest,
@@ -1144,11 +1144,43 @@ class Archive:
                         depth=depth + 1,
                         flat_used=flat_used,
                     ):
-                        result.extracted.append(target)
+                        # For the non-streaming (7z) backend, is_arc was a guess
+                        # from the extension, so this leaf bypassed the leaf
+                        # filter above. Re-apply it now: a non-archive named like
+                        # an archive (e.g. a text file "decoy.zip") must still
+                        # honour include/exclude, matching the content-sniffing
+                        # streaming backends.
+                        if not backend.streaming and not _passes_filter(
+                            e.name, ctx.include, ctx.exclude
+                        ):
+                            self._unwrite_filtered_leaf(e.name, target, ctx, result)
+                        else:
+                            result.extracted.append(target)
                 else:
                     result.skipped_nested.append(str(target))
             else:
                 result.extracted.append(target)
+
+    def _unwrite_filtered_leaf(
+        self, name: str, target: Path, ctx: _Ctx, result: ExtractResult
+    ) -> None:
+        """Undo a member written only to attempt an archive open, then record it
+        as filtered.
+
+        Used when a non-streaming member was extension-classified as a container
+        (so it skipped the leaf filter and was written so it could be opened) but
+        turned out to be an ordinary leaf that the filter excludes. Removes the
+        file and returns the file/byte budget it consumed.
+        """
+        try:
+            written = target.stat().st_size
+        except OSError:
+            written = 0
+        target.unlink(missing_ok=True)
+        ctx.file_count -= 1
+        ctx.total_bytes -= written
+        ctx.written_targets.discard(target)
+        result.skipped_filtered.append(name)
 
     def _target_for(
         self,
