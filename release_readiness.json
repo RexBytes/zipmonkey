@@ -60,6 +60,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"LOW": 1},
       "note": "First clean panel after the BytesIOFactory refactor; weighted yield 1.0 (below tau). opus attacked the refactored read path directly (factory key-mismatch surface, normalization-duplicate names, limit boundary, hostile names) and found ZERO -- evidence the mechanism change closed the recurring 7z seam. LOW (sonnet, reproduced): recursive 7z enforces max_member_bytes before the include/exclude filter (non-streaming members must be materialised to sniff for nesting); documented as an intentional cost-of-fix tradeoff. DISMISSED haiku 'HIGH' duplicate-member-name read: opus+sonnet independently judged it correct (by-name APIs cannot disambiguate duplicates; extraction records them in skipped_collisions, nothing lost); documented as a fundamental-ambiguity limitation. Both behaviours pinned with tests. Clean streak now 1 of 2."
+    },
+    {
+      "id": "8",
+      "commits": [],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {},
+      "note": "CLEAN at full diversity -- all three models found ZERO defects across a broad assault deliberately steered OFF the now-closed 7z seam onto safety.py (traversal/realpath/drive-letter/UNC/control), detect.py thresholds, cap enforcement at N vs N+1 with partial-result cleanup, artifacts four-corner tests, models invariants, CLI exit codes, and the single-file backends (sonnet alone ran ~35 real-input repros). The Panel-7 BytesIOFactory refactor held. Only the long-standing rar directory-member asymmetry was noted again as READ-ONLY-UNVERIFIED (no rar binary) -- not a confirmed finding. Second consecutive full-diversity clean panel: clean streak 2 of 2 -> release gate satisfied."
     }
   ]
 }

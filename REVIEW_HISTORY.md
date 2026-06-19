@@ -14,24 +14,25 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 7 (3 models each: opus, sonnet, haiku) |
+| Multi-model review panels | 8 (3 models each: opus, sonnet, haiku) |
 | Confirmed findings (panels) | 17 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 7 LOW, 3 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 → 1.0 |
+| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 → 1.0 → 0.0 |
 | Tests | 273 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~250 passing / 5 skipped |
-| Release-Readiness Score | 90.6 / 100 |
-| Convergence | clean streak 1 of 2 required; confidence 0.63; rate 0.07 |
-| Verdict | NOT RELEASABLE — gates green and RRS ≥ 90; need 1 more consecutive clean panel |
+| Release-Readiness Score | 94.3 / 100 |
+| Convergence | clean streak 2 of 2 ✓; confidence 0.86; rate 0.00 |
+| Verdict | **RELEASABLE** — gates green, RRS ≥ 90, two consecutive full-diversity clean panels |
 
-> After Panels 5–6 kept extracting silent data-loss MEDIUMs from the same seam,
-> the `_SevenZipBackend.read` mechanism was **root-cause refactored** (commit
-> `d3cd07a`) from extract-to-temp + path-reconstruction to an in-memory
-> `BytesIOFactory` read keyed by py7zr's own member name — removing the whole
-> mismatch class rather than patching instances. **Panel 7 is the proof it
-> worked:** opus attacked the new read path directly and found nothing; the only
-> finding was a niche recursive-7z cap/filter ordering LOW (documented), and a
-> haiku "HIGH" duplicate-name read was dismissed (2-of-3 consensus: by-name APIs
-> can't disambiguate duplicates; extraction loses nothing). Weighted yield back
-> to 1.0, RRS ≥ 90, clean streak 1. One more clean panel ships it.
+> **Converged.** Panels 7 and 8 are two consecutive full-diversity panels with
+> nothing above LOW (Panel 8 found nothing at all from any model), so the
+> clean-streak safeguard is satisfied; RRS is 94.3 and every hard gate is green.
+> The arc tells the story: an early structural/security cluster (Panel 1),
+> a steady decay, a near-clean Panel 4 that the gate correctly refused to ship,
+> a non-monotonic resurgence (Panels 5–6 — silent data loss from one fragile 7z
+> mechanism), a **root-cause refactor** that replaced the mechanism, and two
+> clean panels confirming the surface converged. Residual risk is low and
+> measured. Remaining known-unverified item: the rar *content* path (no `rar`
+> binary in this environment) — it rests on CI and code review, not the panel
+> signal; see the release-decision note below.
 
 ## Trajectory
 
@@ -47,6 +48,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 6 | 1 MEDIUM, 1 LOW | 5.0 | 7z `..`-prefixed basename loss (Panel-5 fix regression); overwrite=False collision bucket |
 | — | _root-cause refactor_ | — | 7z read → in-memory BytesIOFactory keyed by member name (commit `d3cd07a`) |
 | 7 | 1 LOW | 1.0 | Recursive-7z cap-before-filter (documented); duplicate-name read HIGH dismissed — refactor held |
+| 8 | _none_ | 0.0 | Clean at full diversity (broad sweep off the 7z seam) — release gate satisfied |
 
 ## What each panel found and how it was fixed
 
@@ -185,6 +187,35 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
     API cannot disambiguate two members sharing a name, and extraction preserves
     both (`skipped_collisions`). Documented as a fundamental-ambiguity limitation.
     Both behaviours pinned with golden-behaviour tests.
+
+- **8 — converged; release gate satisfied (no code change).** All three models
+  found **zero** defects across a broad assault deliberately steered *off* the
+  now-closed 7z seam: `safe_target` traversal / realpath / drive-letter / UNC /
+  control-char rejection, `detect.py` thresholds, cap enforcement at N vs N+1
+  with partial-result cleanup, `is_os_artifact` four-corner tests, `models`
+  invariants, CLI exit codes, and the single-file backends (sonnet alone ran
+  ~35 real-input repros). The only thing raised was the long-standing rar
+  directory-member asymmetry, again **read-only-unverified** (no `rar` binary) —
+  not a confirmed finding. This is the **second consecutive full-diversity clean
+  panel**, so the clean-streak safeguard is met and the package is RELEASABLE.
+
+## Release decision (v0.1.0)
+
+`python scripts/readiness.py` → **RELEASABLE**: all hard gates green (tests /
+ruff / mypy / no open defects), **RRS 94.3 / 100**, **clean streak 2 of 2** at
+full diversity (confidence 0.86).
+
+**What the convergence signal covers:** the full ZIP, tar, and gzip/bz2/xz
+single-file surfaces, and the **7z** backend (py7zr installed and exercised for
+real across eight panels — it was the richest source of defects and is now the
+most heavily tested).
+
+**What it does *not* cover (rests on CI + code review instead):** the **rar
+content path**. This environment has no `rar`/`unrar` binary, so `.rar` fixtures
+can't be created and rar read/extract can't be exercised end-to-end. The rar
+*code* was read every panel; one directory-member `open_stream` asymmetry is
+noted as known-unverified, to confirm and (if real) fix when a rar binary is
+available. Ship-blocking only for callers who rely on the optional rar backend.
 
 ## Standing themes
 
