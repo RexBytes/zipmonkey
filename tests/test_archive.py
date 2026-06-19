@@ -819,6 +819,46 @@ def test_single_file_fallback_name(tmp_path):
     assert rep.entries[0].name == "data"
 
 
+def _zip_one(tmp_path):
+    z = tmp_path / "one.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("a.txt", b"hi")
+    return z
+
+
+def _tar_one(tmp_path):
+    t = tmp_path / "one.tar"
+    data = b"hi"
+    with tarfile.open(t, "w") as tf:
+        ti = tarfile.TarInfo("a.txt")
+        ti.size = len(data)
+        tf.addfile(ti, io.BytesIO(data))
+    return t
+
+
+def _gz_one(tmp_path):
+    import gzip
+
+    g = tmp_path / "lone.gz"
+    with gzip.open(g, "wb") as f:
+        f.write(b"hi")
+    return g
+
+
+@pytest.mark.parametrize("factory", [_zip_one, _tar_one, _gz_one])
+def test_missing_member_raises_archive_read_error(tmp_path, factory):
+    # Reading a name that is not in the archive must raise the documented
+    # ArchiveReadError uniformly across backends -- not leak a raw KeyError
+    # (zip/tar) nor silently return bytes (the single-file backend used to
+    # return the lone member's payload for any name).
+    p = factory(tmp_path)
+    with zipmonkey.open(p) as arc:
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.read("does-not-exist")
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.open_member("does-not-exist")
+
+
 @pytest.mark.parametrize(
     "ext,opener",
     [(".gz", "gzip"), (".xz", "lzma")],

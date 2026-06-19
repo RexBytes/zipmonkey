@@ -70,11 +70,14 @@ class ArchiveReadError(ValueError):
 
 
 # Low-level errors that mean "this member could not be read" (wrong/missing
-# password, bad CRC, corrupt compressed data). Note BadZipFile and BadGzipFile
-# are NOT RuntimeError/each-other (BadZipFile subclasses Exception directly,
-# BadGzipFile subclasses OSError), so both bases are listed explicitly.
-# ArchiveLimitError (a RuntimeError subclass) is raised only OUTSIDE the
-# narrow read-guarded blocks, so it is never swallowed here.
+# password, bad CRC, corrupt compressed data, no such member). Note BadZipFile
+# and BadGzipFile are NOT RuntimeError/each-other (BadZipFile subclasses
+# Exception directly, BadGzipFile subclasses OSError), so both bases are listed
+# explicitly. KeyError is how zipfile/tarfile signal "no such member"; listing
+# it normalises a missing-member lookup into ArchiveReadError instead of leaking
+# a raw KeyError past the public read API. ArchiveLimitError (a RuntimeError
+# subclass) is raised only OUTSIDE the narrow read-guarded blocks, so it is
+# never swallowed here.
 _READ_ERRORS = (
     RuntimeError,
     OSError,
@@ -82,6 +85,7 @@ _READ_ERRORS = (
     lzma.LZMAError,
     EOFError,
     zipfile.BadZipFile,
+    KeyError,
 )
 
 
@@ -318,15 +322,25 @@ class _SingleFileBackend(_Backend):
             )
         ]
 
+    def _check_name(self, name: str) -> None:
+        # A single-file archive has exactly one member; reject any other name so
+        # the missing-member contract matches the multi-member backends (which
+        # raise) instead of silently returning the lone member's bytes.
+        if name != self._member:
+            raise KeyError(name)
+
     def read(self, name: str) -> bytes:
+        self._check_name(name)
         with self._opener(self._path, "rb") as fh:
             return fh.read()
 
     def peek(self, name: str, n: int) -> bytes:
+        self._check_name(name)
         with self._opener(self._path, "rb") as fh:
             return fh.read(n)
 
     def open_stream(self, name: str) -> BinaryIO:
+        self._check_name(name)
         return self._opener(self._path, "rb")  # type: ignore[return-value]
 
     def close(self) -> None:
@@ -354,6 +368,15 @@ class _SevenZipBackend(_Backend):
         self._password = pwd
         with py7zr.SevenZipFile(path, mode="r", password=pwd) as zf:
             self._info = list(zf.list())
+        self._names = {item.filename for item in self._info}
+        # py7zr exposes FileInfo.is_symlink; flag those as special so they are
+        # skipped (not materialised) and read as empty, exactly like the ZIP/tar
+        # backends. getattr keeps it working on py7zr versions lacking the field.
+        self._specials = {
+            item.filename
+            for item in self._info
+            if getattr(item, "is_symlink", False)
+        }
 
     def entries(self) -> list[ArchiveEntry]:
         out: list[ArchiveEntry] = []
@@ -365,22 +388,32 @@ class _SevenZipBackend(_Backend):
                     compressed_size=getattr(item, "compressed", 0) or 0,
                     is_dir=bool(getattr(item, "is_directory", False)),
                     is_artifact=is_os_artifact(item.filename),
+                    is_special=item.filename in self._specials,
                 )
             )
         return out
 
     def read(self, name: str) -> bytes:
+        # Special members (symlinks) read as empty, symmetric with tar/zip — and
+        # this also avoids extracting a symlink that py7zr would refuse or follow.
+        if name in self._specials:
+            return b""
         # py7zr corrupt-member / bad-password errors subclass Exception (not in
         # _READ_ERRORS); normalise them here so the read contract holds. peek
         # and open_stream both route through read, so this covers them too.
         #
         # py7zr >= 1.0 removed SevenZipFile.read()/readall(); extract(targets=)
         # is the one content API stable across 0.x and 1.x, so extract just this
-        # member to a throwaway temp dir and read it back. A directory or
-        # special member yields no file, so it reads as b"" (the read contract).
+        # member to a throwaway temp dir and read it back. A directory member
+        # yields no file, so it reads as b"" (the read contract).
         import tempfile
 
         try:
+            if name not in self._names:
+                # Missing member: raise so it normalises to ArchiveReadError,
+                # rather than silently returning b"" (which py7zr's targeted
+                # extract would do, masking "missing" as "empty").
+                raise KeyError(name)
             with tempfile.TemporaryDirectory() as td:
                 with self._py7zr.SevenZipFile(
                     self._path, mode="r", password=self._password
@@ -774,7 +807,7 @@ class Archive:
 
         Raises:
             ArchiveReadError: If the member cannot be read (e.g. wrong/missing
-                password or corrupt data).
+                password or corrupt data) or no member of that name exists.
         """
         try:
             return self._backend.read(name)
@@ -796,7 +829,7 @@ class Archive:
 
         Raises:
             ArchiveReadError: If the member cannot be opened (e.g. wrong/missing
-                password).
+                password) or no member of that name exists.
         """
         try:
             stream = self._backend.open_stream(name)

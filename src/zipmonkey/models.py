@@ -26,8 +26,9 @@ class ArchiveEntry:
         is_artifact: True when the member is an OS-generated junk file
             (see :func:`zipmonkey.artifacts.is_os_artifact`).
         is_special: True when the member is neither a regular file nor a
-            directory — a symlink, hardlink, device, or FIFO (only tar stores
-            these). Special members are skipped during extraction rather than
+            directory — a symlink, hardlink, device, or FIFO. Detected across
+            every backend that can store them (tar links/devices, ZIP/7z/rar
+            symlinks). Special members are skipped during extraction rather than
             materialised.
         detected_type: A short type label (e.g. ``"csv"``, ``"pdf"``,
             ``"zip"``) inferred from magic bytes, or ``None`` when not

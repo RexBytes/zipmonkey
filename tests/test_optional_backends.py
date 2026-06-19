@@ -192,6 +192,41 @@ def test_sevenzip_include_filter(tmp_path):
     assert {p.name for p in res.extracted} == {"a.csv"}
 
 
+def test_sevenzip_symlink_flagged_and_skipped(tmp_path):
+    # py7zr stores symlinks and exposes FileInfo.is_symlink; the 7z backend must
+    # flag them is_special and skip them on extraction, exactly like ZIP/tar —
+    # not materialise them as empty regular files (which inflated count and left
+    # skipped_links empty before this fix).
+    py7zr = pytest.importorskip("py7zr")
+    real = tmp_path / "r.txt"
+    real.write_bytes(b"content")
+    link = tmp_path / "s.txt"
+    link.symlink_to("r.txt")
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.write(real, "r.txt")
+        zf.write(link, "s.txt")
+
+    rep = zipmonkey.inspect(archive)
+    sym = next(e for e in rep.entries if e.name == "s.txt")
+    assert sym.is_special is True
+
+    res = zipmonkey.extract(archive, tmp_path / "out")
+    assert res.skipped_links == ["s.txt"]
+    assert res.count == 1  # only the real file is a leaf
+    assert {p.name for p in (tmp_path / "out").iterdir()} == {"r.txt"}
+    # A special member reads as empty, symmetric with tar/zip.
+    with zipmonkey.open(archive) as arc:
+        assert arc.read("s.txt") == b""
+
+
+def test_sevenzip_missing_member_raises(tmp_path):
+    archive = _make_7z(tmp_path, {"a.txt": b"hi"})
+    with zipmonkey.open(archive) as arc:
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.read("nope.txt")
+
+
 def test_sevenzip_byte_cap_preflight(tmp_path):
     archive = _make_7z(tmp_path, {"big.bin": b"\x00" * (2 * 1024 * 1024)})
     # Declared uncompressed size (2 MiB) exceeds the cap -> rejected.

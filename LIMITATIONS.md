@@ -34,11 +34,11 @@ describes only the current library.
 
 ## Cost-of-fix exceeds value
 
-### Tar members have no per-member compressed size
-- **Concern:** For tar/tar.gz archives, every `ArchiveEntry.compressed_size` is `0`, so `InspectReport.compression_ratio` reads `0.00`.
-- **Decision:** Report `0` compressed size for tar members and let the ratio reflect it.
-- **Rationale:** Tar compresses the *whole stream*, not individual members, so there is no per-member compressed size to report — the information does not exist in the format. Synthesising a plausible-looking number (e.g. prorating the stream size) would invent data the format never recorded. `ArchiveEntry.size` (uncompressed) is always accurate.
-- **Escape hatch:** For an overall figure, compare `os.path.getsize(archive)` against `InspectReport.total_size` yourself.
+### Tar members (and 7z solid-block members) have no per-member compressed size
+- **Concern:** For tar/tar.gz archives every `ArchiveEntry.compressed_size` is `0` (so `InspectReport.compression_ratio` reads `0.00`); for 7z archives written as a *solid* block, py7zr attributes the whole block's packed size to the first member and reports `0` for the rest, so those members also read `ratio 0.00`.
+- **Decision:** Report whatever per-member compressed size the format/library exposes (`0` for tar members and trailing 7z solid-block members) and let the ratio reflect it.
+- **Rationale:** Tar compresses the *whole stream* and 7z compresses a *whole solid block*, not individual members, so there is no per-member compressed size to report — the information does not exist at that granularity. Synthesising a plausible-looking number (e.g. prorating the stream size) would invent data the format never recorded. `ArchiveEntry.size` (uncompressed) is always accurate, and the archive's overall ratio is meaningful.
+- **Escape hatch:** For an overall figure, compare `os.path.getsize(archive)` against `InspectReport.total_size` yourself; write 7z non-solid if you need per-member compressed sizes.
 
 ### Inspecting a standalone gzip/bzip2/xz streams the whole payload to size it
 - **Concern:** `inspect("huge.gz")` reads the entire decompressed stream to report `total_size`, with no inspect-time byte cap — slow for very large single-file streams.
