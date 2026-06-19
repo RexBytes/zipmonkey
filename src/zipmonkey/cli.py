@@ -28,7 +28,7 @@ def _human_size(n: int) -> str:
     Carries to the next unit when rounding would otherwise display ``1024.0``
     of the current unit (so ``1048575`` reads ``1.0M``, not ``1024.0K``).
     """
-    units = ["B", "K", "M", "G", "T", "P"]
+    units = ["B", "K", "M", "G", "T", "P", "E", "Z", "Y"]
     size = float(n)
     i = 0
     while i < len(units) - 1 and size >= 1024:

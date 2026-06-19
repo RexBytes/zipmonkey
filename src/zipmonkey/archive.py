@@ -155,14 +155,31 @@ class _ZipBackend(_Backend):
             )
         return out
 
+    def _is_special(self, name: str) -> bool:
+        # A ZIP symlink stores the Unix mode in external_attr's high 16 bits;
+        # its body is the link-target text, not file content. Mirror the tar
+        # backend: special members read as empty and have no content stream.
+        try:
+            info = self._zf.getinfo(name)
+        except KeyError:
+            return False
+        mode = info.external_attr >> 16
+        return bool(stat.S_ISLNK(mode)) if mode else False
+
     def read(self, name: str) -> bytes:
+        if self._is_special(name):
+            return b""
         return self._zf.read(name)
 
     def peek(self, name: str, n: int) -> bytes:
+        if self._is_special(name):
+            return b""
         with self._zf.open(name) as fh:
             return fh.read(n)
 
-    def open_stream(self, name: str) -> BinaryIO:
+    def open_stream(self, name: str) -> BinaryIO | None:
+        if self._is_special(name):
+            return None
         return self._zf.open(name)  # type: ignore[return-value]
 
     def close(self) -> None:
@@ -346,12 +363,21 @@ class _SevenZipBackend(_Backend):
         # py7zr corrupt-member / bad-password errors subclass Exception (not in
         # _READ_ERRORS); normalise them here so the read contract holds. peek
         # and open_stream both route through read, so this covers them too.
+        #
+        # py7zr >= 1.0 removed SevenZipFile.read()/readall(); extract(targets=)
+        # is the one content API stable across 0.x and 1.x, so extract just this
+        # member to a throwaway temp dir and read it back. A directory or
+        # special member yields no file, so it reads as b"" (the read contract).
+        import tempfile
+
         try:
-            with self._py7zr.SevenZipFile(
-                self._path, mode="r", password=self._password
-            ) as zf:
-                data = zf.read([name])
-                return data[name].read()
+            with tempfile.TemporaryDirectory() as td:
+                with self._py7zr.SevenZipFile(
+                    self._path, mode="r", password=self._password
+                ) as zf:
+                    zf.extract(path=td, targets=[name])
+                target = Path(td) / name
+                return target.read_bytes() if target.is_file() else b""
         except Exception as exc:
             raise _as_read_error(name, exc) from exc
 

@@ -25,7 +25,7 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-sevenzip = ["py7zr>=0.20"]
+sevenzip = ["py7zr>=0.20,<2"]
 rar = ["rarfile>=4.0"]
 dev = [
     "pytest>=7.0",

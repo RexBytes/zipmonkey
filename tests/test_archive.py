@@ -356,6 +356,24 @@ def test_zip_symlink_marked_special_and_skipped(tmp_path):
     assert (tmp_path / "out" / "target.txt").read_bytes() == b"real"
 
 
+def test_zip_symlink_reads_as_empty(tmp_path):
+    # read()/open_member must honour the "special members are empty" contract
+    # for ZIP symlinks too, rather than returning the link-target bytes (the
+    # symmetric tar guard exists; this pins the ZIP one).
+    z = tmp_path / "links.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        info = zipfile.ZipInfo("alias.txt")
+        info.external_attr = 0o120777 << 16  # S_IFLNK | 0777
+        zf.writestr(info, "target.txt")  # body is the link target text
+        zf.writestr("target.txt", b"real")
+    with zipmonkey.open(z) as arc:
+        assert arc.read("alias.txt") == b""
+        with arc.open_member("alias.txt") as fh:
+            assert fh.read() == b""
+        # the genuine file is unaffected
+        assert arc.read("target.txt") == b"real"
+
+
 def test_open_member_directory_returns_empty_stream(tmp_path):
     z = tmp_path / "d.zip"
     with zipfile.ZipFile(z, "w") as zf:

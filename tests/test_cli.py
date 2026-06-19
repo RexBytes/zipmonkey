@@ -25,6 +25,13 @@ from zipmonkey.cli import _human_size, build_parser, main
         (1024 * 1024 * 1024, "1.0G"),
         (1024**4, "1.0T"),
         (1024**5, "1.0P"),
+        (1024**6, "1.0E"),
+        (1024**7, "1.0Z"),
+        (1024**8, "1.0Y"),
+        # regression: the carry guard used to give up at the last unit, so a
+        # value rounding to 1024.0 of the prior unit rendered "1024.0P".
+        (1_152_865_209_611_504_832, "1.0E"),
+        (2**63, "8.0E"),
     ],
 )
 def test_human_size(n, expected):

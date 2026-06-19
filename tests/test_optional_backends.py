@@ -169,6 +169,16 @@ def _make_7z(tmp_path, members: dict[str, bytes]):
     return archive
 
 
+def test_sevenzip_read_nested_member(tmp_path):
+    # Regression: py7zr >= 1.0 removed SevenZipFile.read(); reading a member
+    # (including one under a subdirectory) must still return its exact bytes
+    # across the 0.x/1.x API boundary.
+    archive = _make_7z(tmp_path, {"top.txt": b"hello", "sub/inner.csv": b"a,b\n"})
+    with zipmonkey.open(archive) as arc:
+        assert arc.read("top.txt") == b"hello"
+        assert arc.read("sub/inner.csv") == b"a,b\n"
+
+
 def test_sevenzip_extract(tmp_path):
     archive = _make_7z(tmp_path, {"a.csv": b"x,y\n1,2\n", "b.txt": b"hello"})
     res = zipmonkey.extract(archive, tmp_path / "out")
