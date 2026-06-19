@@ -439,24 +439,21 @@ class _SevenZipBackend(_Backend):
             raise _as_read_error(name, exc) from exc
 
     def _read_member(self, name: str) -> bytes:
-        # py7zr >= 1.0 removed SevenZipFile.read()/readall(). Capture the member
-        # straight into memory via BytesIOFactory, keyed by py7zr's OWN member
-        # name -- no temp files and no path reconstruction. The previous
-        # extract-to-temp-then-Path(td)/name approach had to re-derive py7zr's
-        # on-disk normalisation and silently returned b"" whenever the guess was
-        # wrong (interior "..", or basenames beginning with dots): two distinct
-        # silent-data-loss defects. Reading by the archive's own member name has
-        # no such gap. py7zr 0.x lacks the factory but still has read().
+        # Capture the member straight into memory via py7zr's BytesIOFactory,
+        # keyed by py7zr's OWN member name -- no temp files and no path
+        # reconstruction. (The old extract-to-temp-then-Path(td)/name approach
+        # had to re-derive py7zr's on-disk normalisation and silently returned
+        # b"" whenever the guess was wrong -- interior ".." or dot-prefixed
+        # basenames -- two distinct silent-data-loss defects. Reading by the
+        # archive's own member name has no such gap.) py7zr >= 1.1 is required
+        # (BytesIOFactory and FileInfo.is_symlink both landed by 1.1.0).
         py7zr = self._py7zr
-        factory_cls = getattr(getattr(py7zr, "io", None), "BytesIOFactory", None)
+        factory = py7zr.io.BytesIOFactory(limit=sys.maxsize)
         with py7zr.SevenZipFile(
             self._path, mode="r", password=self._password
         ) as zf:
-            if factory_cls is not None:
-                factory = factory_cls(limit=sys.maxsize)
-                zf.extract(targets=[name], factory=factory)
-                return factory.get(name).read()
-            return zf.read([name])[name].read()  # py7zr 0.x
+            zf.extract(targets=[name], factory=factory)
+            return factory.get(name).read()
 
     def peek(self, name: str, n: int) -> bytes:
         return self.read(name)[:n]
