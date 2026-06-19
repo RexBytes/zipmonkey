@@ -1,0 +1,15 @@
+{
+  "_comment": "Config for scripts/readiness.py (see RELEASE_READINESS.md). Signals, available_models, weights and targets are read from here so the script stays byte-identical across projects. 'panels' starts empty: append one object per review panel (its participating models and NEW confirmed findings by severity) as panels are run, then re-run scripts/readiness.py.",
+  "severity_weights": {"CRITICAL": 40, "HIGH": 10, "MEDIUM": 4, "LOW": 1, "NIT": 0.2},
+  "available_models": ["opus", "sonnet", "haiku"],
+  "tau": 2,
+  "coverage_target": 0.90,
+  "contract_coverage_estimate": 0.80,
+  "known_open_defects": 0,
+  "signals": {
+    "property_tests": {"file": "tests/test_properties.py", "needle": "hypothesis"},
+    "security": {"file": "tests/test_safety.py", "needles": ["traversal", "escape"]},
+    "docs": ["LIMITATIONS.md", "SKILL.md", "CONTRIBUTING.md", "README.md"]
+  },
+  "panels": []
+}
