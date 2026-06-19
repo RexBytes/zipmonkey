@@ -30,6 +30,12 @@ describes only the current library.
 - **Rationale:** Determining that a gzip stream wraps a tar (versus a single file) requires decompressing and parsing the stream — that is the archive layer's job, not a byte-sniff. `Archive.format` (which *does* open the stream) reports `"tar.gz"` correctly.
 - **Escape hatch:** Use `zipmonkey.open(path).format` for the resolved compound format.
 
+### Reading a duplicate member name returns one (unspecified) member
+- **Concern:** An archive with two members of the same name (e.g. two `f.txt`) returns only one of them from `read("f.txt")`/`open_member("f.txt")` — the first for 7z, the last for ZIP/tar.
+- **Decision:** `read`/`open_member` are by-*name* lookups; for a duplicated name they return whichever member that name resolves to in the underlying library (first vs last differs by backend). Full fidelity is the *extraction* path's job.
+- **Rationale:** A by-name API cannot return two different members for one name — there is no key to disambiguate them, and which one is "correct" has no content-independent answer. Inventing positional/index access would bloat the API for a rare, malformed input. Extraction *does* preserve every member: the first is written and each later duplicate is recorded in `ExtractResult.skipped_collisions`, so nothing is silently lost.
+- **Escape hatch:** Use `extract()` and inspect `skipped_collisions`, or open the archive with the underlying library (`zipfile`/`tarfile`/`py7zr`) and iterate members positionally.
+
 ---
 
 ## Cost-of-fix exceeds value
@@ -51,6 +57,12 @@ describes only the current library.
 - **Decision:** Accept whole-member materialisation for 7z and guard it with a *declared-size preflight* (the member's header size is checked against `max_total_bytes` before any decompression), plus the `_Backend.streaming = False` flag.
 - **Rationale:** `py7zr` exposes only whole-member decompression (`read()` returns a `BytesIO`); there is no public chunked/callback API to stream against. The preflight rejects oversized members before they are decompressed, closing the declared-bomb hole; the residual cost is in-memory size for an *honestly-declared* large member, which only affects callers who opt into 7z. Core stdlib formats are unaffected.
 - **Escape hatch:** For untrusted/large 7z, set `max_member_bytes` (a per-member cap that rejects an oversized member before it is decompressed) and/or a small `max_total_bytes`, pass `detect_types=False` to `inspect`, or extract members individually with your own preflight via `Archive.entries()` + `Archive.open_member`.
+
+### Recursive 7z enforces `max_member_bytes` before the include/exclude filter
+- **Concern:** With `recursive=True`, a `max_member_bytes` set, and an include/exclude filter, an over-cap 7z member that *would have been filtered out* raises `ArchiveLimitError` instead of being skipped. The same archive as ZIP/tar skips it cleanly.
+- **Decision:** For a non-streaming backend (7z), enforce the per-member cap *before* the type-sniff peek, which runs before the leaf filter.
+- **Rationale:** Under recursion every member must be sniffed to decide whether it is a nested archive (containers are always traversed, so a leaf filter cannot pre-empt the sniff). The 7z sniff *materialises* the whole member, so the cap has to fire first or the materialisation it guards against has already happened — the cap is a hard safety limit, and "it fired on a member you'd have filtered" is the safe direction to err. Streaming backends (ZIP/tar) peek cheaply, so they filter before the cap with no materialisation; the asymmetry is intrinsic to streaming vs whole-member backends. A "filter first" reordering would either materialise the member anyway (defeating the guard) or skip sniffing excluded-named containers (breaking the documented "containers are always traversed").
+- **Escape hatch:** Raise/clear `max_member_bytes`, or pre-filter by extracting non-recursively and re-processing only the members you want.
 
 ### Extraction is not TOCTOU-race-proof against a hostile concurrent writer
 - **Concern:** `safe_target` resolves symlinks in the existing `dest` prefix before writing, but another process mutating the `dest` tree *during* extraction could in principle defeat the check (a time-of-check/time-of-use race).

@@ -245,6 +245,49 @@ def test_sevenzip_missing_member_raises(tmp_path):
             arc.read("nope.txt")
 
 
+def test_sevenzip_duplicate_member_name_read_one_extract_records_collision(tmp_path):
+    # Documented limitation: read-by-name returns one member for a duplicated
+    # name (no key disambiguates them); extraction preserves both -- first wins,
+    # the later duplicate is recorded in skipped_collisions (nothing is lost).
+    py7zr = pytest.importorskip("py7zr")
+    archive = tmp_path / "dup.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(b"ALICE"), "f.txt")
+        zf.writef(io.BytesIO(b"BOB"), "f.txt")
+    with zipmonkey.open(archive) as arc:
+        assert len(arc.entries()) == 2
+        assert arc.read("f.txt") == b"ALICE"  # by-name resolves to the first
+    res = zipmonkey.extract(archive, tmp_path / "out")
+    assert res.count == 1
+    assert res.skipped_collisions == ["f.txt"]
+
+
+def test_sevenzip_recursive_member_cap_precedes_filter(tmp_path):
+    # Documented limitation: for the non-streaming 7z backend under recursive=True
+    # the per-member cap is enforced before the leaf filter (every member must be
+    # materialised to sniff for nested archives). An over-cap member that would
+    # be filtered still raises -- whereas a streaming ZIP backend filters it.
+    py7zr = pytest.importorskip("py7zr")
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.writef(io.BytesIO(b"\x00" * 1000), "big.bin")
+        zf.writef(io.BytesIO(b"x,y\n"), "keep.csv")
+    # non-recursive: the filter drops big.bin cleanly
+    res = zipmonkey.extract(
+        archive, tmp_path / "nr", include="*.csv", max_member_bytes=500
+    )
+    assert res.skipped_filtered == ["big.bin"]
+    # recursive: the hard cap fires before the filter can apply
+    with pytest.raises(zipmonkey.ArchiveLimitError):
+        zipmonkey.extract(
+            archive,
+            tmp_path / "r",
+            recursive=True,
+            include="*.csv",
+            max_member_bytes=500,
+        )
+
+
 def test_sevenzip_read_keyed_by_member_name_no_path_reconstruction(tmp_path):
     # The 7z read path captures each member into memory keyed by py7zr's own
     # member name (no temp-file path reconstruction). Pin the mechanism over a
