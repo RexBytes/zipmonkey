@@ -145,6 +145,23 @@ def test_cli_corrupt_zip_returns_1(tmp_path, capsys):
     assert "error:" in capsys.readouterr().err
 
 
+def test_cli_truncated_gzip_returns_1(tmp_path, capsys):
+    # A truncated gzip used to leak a raw EOFError past the CLI's handlers and
+    # exit via an uncaught traceback; it must now exit 1 with a friendly error.
+    import gzip
+    import os
+
+    whole = tmp_path / "full.gz"
+    with gzip.open(whole, "wb") as f:
+        f.write(os.urandom(50_000))
+    blob = whole.read_bytes()
+    trunc = tmp_path / "trunc.gz"
+    trunc.write_bytes(blob[: len(blob) // 2])
+    rc = main(["inspect", str(trunc)])
+    assert rc == 1
+    assert "error:" in capsys.readouterr().err
+
+
 def test_cli_requires_subcommand(capsys):
     with pytest.raises(SystemExit):
         build_parser().parse_args([])

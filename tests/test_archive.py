@@ -374,6 +374,29 @@ def test_zip_symlink_reads_as_empty(tmp_path):
         assert arc.read("target.txt") == b"real"
 
 
+def test_overlong_member_name_skipped_not_crash(tmp_path):
+    # A member whose basename exceeds the filesystem NAME_MAX (~255 bytes) must
+    # be recorded and skipped, not abort the whole extraction with a raw
+    # OSError(ENAMETOOLONG) that discards the result and any sibling files.
+    z = tmp_path / "long.zip"
+    longname = "a" * 300 + ".txt"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("before.txt", b"1")
+        zf.writestr(longname, b"2")
+        zf.writestr("after.txt", b"3")
+
+    res = zipmonkey.extract(z, tmp_path / "out")
+    assert res.count == 2  # the two well-named siblings still land
+    assert res.skipped_unsafe == [longname]
+    assert {p.name for p in (tmp_path / "out").iterdir()} == {
+        "before.txt",
+        "after.txt",
+    }
+    # The overwrite=False path probes target.exists() too; it must not crash.
+    res2 = zipmonkey.extract(z, tmp_path / "out2", overwrite=False)
+    assert res2.skipped_unsafe == [longname]
+
+
 def test_open_member_directory_returns_empty_stream(tmp_path):
     z = tmp_path / "d.zip"
     with zipfile.ZipFile(z, "w") as zf:
@@ -794,6 +817,35 @@ def test_single_file_fallback_name(tmp_path):
         f.write(b"payload")
     rep = zipmonkey.inspect(p)
     assert rep.entries[0].name == "data"
+
+
+@pytest.mark.parametrize(
+    "ext,opener",
+    [(".gz", "gzip"), (".xz", "lzma")],
+)
+def test_truncated_single_file_normalises_to_read_error(tmp_path, ext, opener):
+    # A truncated gzip/xz passes validate() (one byte decodes) but fails later
+    # when entries()/inspect()/namelist() stream the whole payload to size it.
+    # The raw EOFError/LZMAError must surface as the documented ArchiveReadError,
+    # not leak a library traceback past the package exception hierarchy.
+    import gzip
+    import lzma
+    import os
+
+    mod = {"gzip": gzip, "lzma": lzma}[opener]
+    whole = tmp_path / ("full" + ext)
+    with mod.open(whole, "wb") as f:
+        f.write(os.urandom(100_000))  # incompressible -> truncation really cuts
+    blob = whole.read_bytes()
+    trunc = tmp_path / ("trunc" + ext)
+    trunc.write_bytes(blob[: len(blob) // 2])
+
+    # open() still succeeds (validate only reads one byte)...
+    with zipmonkey.open(trunc) as arc:
+        with pytest.raises(zipmonkey.ArchiveReadError):
+            arc.namelist()
+    with pytest.raises(zipmonkey.ArchiveReadError):
+        zipmonkey.inspect(trunc)
 
 
 # -- walk_typed recursive flag --------------------------------------------- #

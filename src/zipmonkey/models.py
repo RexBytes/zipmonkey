@@ -130,8 +130,10 @@ class ExtractResult:
         skipped_filtered: Member names skipped because of include/exclude
             filters.
         skipped_unsafe: Member names skipped because their target path
-            escaped ``dest`` (path-traversal protection) or contained
-            NUL/control characters.
+            could not be safely placed under ``dest``: it escaped ``dest``
+            (path-traversal protection), contained NUL/control characters, or
+            was rejected by the filesystem (e.g. a path component exceeded the
+            maximum name length).
         skipped_collisions: Member names skipped because their target path
             collided with an already-written file/directory of the same name
             (an archive containing both ``foo`` and ``foo/bar`` cannot place

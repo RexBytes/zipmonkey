@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import builtins
 import bz2
+import errno
 import fnmatch
 import gzip
 import lzma
@@ -288,12 +289,21 @@ class _SingleFileBackend(_Backend):
         # Stream-count without holding the whole payload in memory (bomb-safe).
         if self._size is None:
             total = 0
-            with self._opener(self._path, "rb") as fh:
-                while True:
-                    chunk = fh.read(_CHUNK)
-                    if not chunk:
-                        break
-                    total += len(chunk)
+            try:
+                with self._opener(self._path, "rb") as fh:
+                    while True:
+                        chunk = fh.read(_CHUNK)
+                        if not chunk:
+                            break
+                        total += len(chunk)
+            except _DECOMP_ERRORS as exc:
+                # A truncated/corrupt gzip/xz/bz2 stream only fails mid-stream:
+                # validate() reads one byte and passes, then entries()/inspect()/
+                # namelist() trip the raw EOFError/LZMAError/OSError here.
+                # Normalise it so callers and the CLI get the documented
+                # ArchiveReadError, not a library traceback that escapes the
+                # package exception hierarchy.
+                raise _as_read_error(self._member, exc) from exc
             self._size = total
         return self._size
 
@@ -997,6 +1007,22 @@ class Archive:
             if target is None:
                 continue  # already recorded as unsafe
 
+            # Prepare the target (create parent, detect clashes/unwritable names)
+            # FIRST, so any filesystem probe below cannot trip a raw OSError, and
+            # so a member that cannot be written never consumes the file/byte
+            # budget (which would raise a spurious ArchiveLimitError).
+            placement = self._prepare_target(target)
+            if placement == "collision":
+                # File/dir name clash ("foo" plus "foo/bar"): cannot place both.
+                result.skipped_collisions.append(e.name)
+                continue
+            if placement == "unwritable":
+                # The filesystem rejects this target name (e.g. a component
+                # exceeds NAME_MAX). Record and continue rather than aborting the
+                # whole extraction with an uncaught OSError(ENAMETOOLONG).
+                result.skipped_unsafe.append(e.name)
+                continue
+
             if not ctx.overwrite and target.exists():
                 result.skipped_existing.append(e.name)
                 continue
@@ -1005,13 +1031,6 @@ class Archive:
             # "./a.txt"); the first wins, the rest are collisions rather than
             # silent overwrites that would desync `extracted` from disk.
             if target in ctx.written_targets:
-                result.skipped_collisions.append(e.name)
-                continue
-
-            # Detect file/dir name clashes ("foo" plus "foo/bar") BEFORE the cap
-            # preflight, so a member that cannot be written never consumes the
-            # file/byte budget (which would raise a spurious ArchiveLimitError).
-            if self._prepare_target(target) == "collision":
                 result.skipped_collisions.append(e.name)
                 continue
 
@@ -1079,15 +1098,26 @@ class Archive:
 
         Returns ``"collision"`` when the member cannot be placed (a path
         component is a file, or the target itself is an existing directory),
-        else ``"ok"``. Run before the cap preflight so an unplaceable member
-        does not consume the file/byte budget.
+        ``"unwritable"`` when the filesystem rejects the target name (e.g. a
+        path component exceeds NAME_MAX), else ``"ok"``. Run before the cap
+        preflight so an unplaceable member does not consume the file/byte
+        budget.
         """
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
         except (FileExistsError, NotADirectoryError):
             return "collision"
-        if target.exists() and target.is_dir():
-            return "collision"
+        except OSError as exc:
+            if exc.errno == errno.ENAMETOOLONG:
+                return "unwritable"
+            raise
+        try:
+            if target.exists() and target.is_dir():
+                return "collision"
+        except OSError as exc:
+            if exc.errno == errno.ENAMETOOLONG:
+                return "unwritable"
+            raise
         return "ok"
 
     def _write_member(
