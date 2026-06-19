@@ -14,20 +14,22 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 12 (3 models each: opus, sonnet, haiku) |
+| Multi-model review panels | 13 (3 models each: opus, sonnet, haiku) |
 | Confirmed findings (panels) | 22 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 10 LOW, 5 NIT |
-| Severity-weighted yield | 15 → 8 → 5.2 → 1 → 6.4 → 5 → 1 → 0 → 1 → 1 → 1.2 → 0.2 |
-| Tests | 278 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~92% coverage. **CI green** (py7zr 1.1.0/1.1.3 matrix) |
-| Release-Readiness Score | 95.8 / 100 |
-| Convergence | clean streak ≥ 2 at full diversity ✓; confidence 1.00 |
-| Verdict | **RELEASABLE** — gates green, CI green, RRS ≥ 90, Panel 12 full-diversity clean on the exact shipping tree |
+| Severity-weighted yield | 15 → 8 → 5.2 → 1 → 6.4 → 5 → 1 → 0 → 1 → 1 → 1.2 → 0.2 → 0 |
+| Tests | 280 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~92% coverage. **CI green** (py7zr 1.1.0/1.1.3 matrix) |
+| Release-Readiness Score | 96.0 / 100 |
+| Convergence | two consecutive full-diversity clean panels on the shipping tree (12 NIT-only → 13 clean); confidence 1.00 |
+| Verdict | **RELEASABLE** — gates green, CI green, RRS ≥ 90, Panels 12–13 clean on the exact shipping tree |
 
-> **Converged and RELEASABLE on the shipping tree (`a70af86`).** Panel 12 is a
-> full-diversity clean panel directly on the code being shipped (all three models
-> 0 above-NIT; one dismissed cosmetic NIT). The earlier "RELEASABLE" after Panel
-> 8 was on the pre-consolidation tree; it then took a consolidation, a CI fix, and
-> a four-panel fight with one ported feature to honestly re-earn it — see the
-> sections below.
+> **Converged and RELEASABLE on the shipping tree.** Panel 12 (NIT-only) flagged
+> one cosmetic trailing-dot quirk in `_split_ext`; that NIT was fixed (commit
+> `cee47c7`) and **Panel 13** confirmed the fix full-diversity clean (opus +
+> sonnet 0 findings; one haiku "HIGH" dismissed as a misread whose own proposed
+> fix was a lossy regression). The earlier "RELEASABLE" after Panel 8 was on the
+> pre-consolidation tree; it then took a consolidation, a CI fix, a four-panel
+> fight with one ported feature, and a final NIT-fix confirmation to honestly
+> re-earn it — see the sections below.
 
 > **Converged.** Panels 7 and 8 are two consecutive full-diversity panels with
 > nothing above LOW (Panel 8 found nothing at all from any model), so the
@@ -59,7 +61,9 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 9 | 1 LOW | 1.0 | Confirmation post-consolidation+CI-fix: 7z extension-detected decoy leaf escaped the filter (fixed); CI red→green |
 | 10 | 1 LOW | 1.0 | flat_used reservation leak in the decoy fix (consensus opus+sonnet; fixed) |
 | 11 | 1 LOW, 1 NIT | 1.2 | 4th issue in the extension feature (cap-before-filter for archive-named) → feature REVERTED to peek/content-sniff |
-| 12 | 1 NIT | 0.2 | Full-diversity clean on the reverted (shipping) tree — RELEASABLE |
+| 12 | 1 NIT | 0.2 | Full-diversity clean on the reverted (shipping) tree; cosmetic trailing-dot NIT |
+| — | _NIT fix_ | — | `_split_ext` splits on the trailing-dot-stripped name (commit `cee47c7`) — `"file." → "file. (1)"` |
+| 13 | _none_ | 0.0 | Confirmation of the NIT fix: opus + sonnet clean; haiku HIGH dismissed (lossy proposed fix) — RELEASABLE |
 
 ## What each panel found and how it was fixed
 
@@ -276,7 +280,7 @@ always traverse; the no-filter path is unchanged.
 > fix is small/tested, so residual risk is low — but the methodology's whole
 > point is to *measure* that, not assume it.)
 
-## Panels 10–12 — the extension feature, fought and reverted
+## Panels 10–13 — the extension feature, fought and reverted
 
 Panel 9's decoy fix introduced a sibling bug Panel 10 caught (the `flat_used`
 leak, consensus opus+sonnet, fixed). Panel 11 then found a *fourth* issue in the
@@ -288,16 +292,35 @@ guardrail the feature was **reverted** to the pre-consolidation content-sniff
 (peek) recursion, eliminating all four extension defects at once and restoring
 *more* correct behaviour (a real archive under a non-archive name is recursed
 again). **Panel 12** then confirmed the reverted tree full-diversity clean
-(0 above-NIT; one dismissed cosmetic trailing-dot NIT).
+(0 above-NIT; one cosmetic trailing-dot NIT).
+
+That NIT was fixed (commit `cee47c7`): `_split_ext` now finds the extension split
+on the trailing-dot-stripped name, so `"file."` carries no extension and a
+flat-mode collision lands as `"file. (1)"` rather than `"file (1)."`. **Panel 13**
+confirmed the fix full-diversity clean. opus and sonnet found ZERO; each
+independently reproduced the multi-dot case (`"a.b.c."` → stem `"a.b"`, ext
+`".c."`, collision `"a.b (1).c."`) and verified it is **lossless**
+(`stem + ext == basename`) — sonnet even built an archive holding both `"a.b.c."`
+and `"a.b (1).c."` and watched all three payloads land distinctly. haiku filed a
+lone **HIGH** reading the docstring's "matching `detect._extension`" as a promise
+of byte-identical extensions; it was **dismissed** because the real contract is
+losslessness of the rename (which holds), and haiku's own proposed fix — splitting
+the extension off the *stripped* name — **drops the trailing dot** (`"a.b (1).c"`,
+`stem + ext != basename`), a lossy regression proven by direct repro. The
+misleading comment that triggered the false positive was clarified and a multi-dot
+regression test added (`test_flatten_collision_multidot_trailing_dot_name`) —
+comment + test only, no behaviour change. Panels 12 and 13 are two consecutive
+full-diversity clean panels on the exact shipping tree.
 
 ## Release decision (v1.0.0) — RELEASABLE
 
 `python scripts/readiness.py` → **RELEASABLE**: all hard gates green (tests /
 ruff / mypy / no open defects), **CI green** (py7zr 1.1.0/1.1.3 matrix),
-**RRS 95.8 / 100**, **clean streak ≥ 2 at full diversity** (confidence 1.00).
-Panel 12 is a full-diversity clean panel on the **exact shipping tree**
-(`a70af86`); the reverted recursion is the Panels 1–8 code and every other
-component was reviewed clean across Panels 9–12.
+**RRS 96.0 / 100**, **clean streak ≥ 2 at full diversity** (confidence 1.00).
+Panels 12 (NIT-only) and 13 (clean, confirming the NIT fix) are two consecutive
+full-diversity clean panels on the **exact shipping tree**; the reverted recursion
+is the Panels 1–8 code and every other component was reviewed clean across
+Panels 9–13.
 
 **What the convergence signal covers:** the full ZIP, tar, and gzip/bz2/xz
 single-file surfaces, and the **7z** backend (py7zr installed and exercised for
@@ -311,9 +334,11 @@ can't be created and rar read/extract can't be exercised end-to-end. The rar
 noted as known-unverified, to confirm and (if real) fix when a rar binary is
 available. Ship-blocking only for callers who rely on the optional rar backend.
 
-**Known cosmetic NITs (below the action threshold, not fixed):** a trailing-dot
-member name (`file.`) yields a `file (1).` collision suffix in flat mode
-(`_split_ext` vs `_extension` disagreement) — pathological input, no data loss.
+**The one cosmetic NIT is now fixed:** the Panel-12 trailing-dot quirk (a
+`file.` member yielding a `file (1).` collision suffix in flat mode) was resolved
+in commit `cee47c7` — `_split_ext` splits on the trailing-dot-stripped name, so
+collisions land as `file. (1)` and every rename stays lossless
+(`stem + ext == basename`), confirmed clean by Panel 13.
 
 ## Standing themes
 
