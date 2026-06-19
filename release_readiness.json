@@ -81,6 +81,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"LOW": 1},
       "note": "CONFIRMATION of the Panel-9 decoy fix. LOW (CONSENSUS opus+sonnet, reproduced): a sibling bug in the Panel-9 fix -- _unwrite_filtered_leaf released ctx.written_targets/file_count/total_bytes but NOT the flat_used basename reservation, so in flat=True a filtered-out decoy left a stale reservation and a later legit member was spuriously renamed 'name (1)' (cosmetic, no data loss). Fixed (e294e52): release flat_used.discard(target.name) when ctx.flat. opus+sonnet both verified the unwrite accounting is otherwise fully consistent with disk (caps, depth, duplicates, streaming). haiku AND sonnet reviewed the POST-fix HEAD e294e52 and found it CLEAN; opus reviewed the pre-fix f2daea3 and its only finding was the now-fixed flat_used leak. Third consecutive fix-induced sibling in the extension-detection feature (Panel 9 decoy, Panel 10 flat_used) -- but the accounting unwind is now comprehensively covered."
+    },
+    {
+      "id": "11",
+      "commits": ["0223eab"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"LOW": 1, "NIT": 1},
+      "note": "FINAL confirmation of the extension-detection feature -- which yielded a defect in THREE straight panels. haiku clean. opus LOW (reproduced): an archive-NAMED, oversized, filtered-out 7z member trips max_member_bytes before the filter and aborts the whole extraction (the extension sniff let archive-named members bypass the filter; the documented 'uniform caps' claim only held for non-archive names). sonnet NIT: empty parent dir left after a non-flat decoy unwrite (write-then-open asymmetry). RESOLUTION per the pre-agreed guardrail: REVERTED the extension-based detection to the pre-consolidation content-sniff (peek) approach (commit 0223eab), eliminating all four extension-feature defects (Panels 9-11) at once and restoring more-correct behaviour (a real archive under a non-archive name is now recursed). The revert restores code that was panel-clean for Panels 1-8; the documented cap-before-filter limitation is reinstated. NOTE: the revert changed code, so a Panel-12 confirmation on the reverted tree is needed to honestly close the streak -- though every remaining component has now been panel-reviewed clean (peek recursion in Panels 1-8; BytesIOFactory/dest-guards/DEL/py7zr-bound in Panels 9-11)."
     }
   ]
 }
