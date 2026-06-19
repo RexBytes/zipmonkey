@@ -88,6 +88,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"LOW": 1, "NIT": 1},
       "note": "FINAL confirmation of the extension-detection feature -- which yielded a defect in THREE straight panels. haiku clean. opus LOW (reproduced): an archive-NAMED, oversized, filtered-out 7z member trips max_member_bytes before the filter and aborts the whole extraction (the extension sniff let archive-named members bypass the filter; the documented 'uniform caps' claim only held for non-archive names). sonnet NIT: empty parent dir left after a non-flat decoy unwrite (write-then-open asymmetry). RESOLUTION per the pre-agreed guardrail: REVERTED the extension-based detection to the pre-consolidation content-sniff (peek) approach (commit 0223eab), eliminating all four extension-feature defects (Panels 9-11) at once and restoring more-correct behaviour (a real archive under a non-archive name is now recursed). The revert restores code that was panel-clean for Panels 1-8; the documented cap-before-filter limitation is reinstated. NOTE: the revert changed code, so a Panel-12 confirmation on the reverted tree is needed to honestly close the streak -- though every remaining component has now been panel-reviewed clean (peek recursion in Panels 1-8; BytesIOFactory/dest-guards/DEL/py7zr-bound in Panels 9-11)."
+    },
+    {
+      "id": "12",
+      "commits": [],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"NIT": 1},
+      "note": "CLEAN confirmation on the reverted tree (a70af86). opus and haiku found ZERO; sonnet found ZERO above NIT, with one NIT: _split_ext('file.') returns ('file','.') while _extension strips the trailing dot, so two trailing-dot-named members collide to 'file.' / 'file (1).' in flat mode (cosmetic, no data loss, pathological trailing-dot filenames). DISMISSED as below the action threshold (fixing it would reset the panel for no real benefit). All three models verified the content-sniff recursion: a real archive under ANY name is recursed; a decoy (archive-named text) is a leaf and honours include/exclude; office docs stay leaves; the cap-before-filter limitation is name-agnostic and matches LIMITATIONS.md; mid-recursion accounting and partial-result cleanup are consistent; full cross-backend sweep clean. This is the first full-diversity clean panel on the exact shipping tree; the reverted recursion is the Panels 1-8 code and every other component was Panels 9-11 clean -- the long-tail trajectory across the confirmation effort decayed LOW(9) -> LOW(10) -> LOW+NIT(11) -> NIT-only(12)."
     }
   ]
 }

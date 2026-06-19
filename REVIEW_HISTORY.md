@@ -14,13 +14,20 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 9 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 18 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 8 LOW, 3 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 → 1.0 → 0.0 → 1.0 |
-| Tests | 278 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~92% coverage. CI green (py7zr 1.1.0/1.1.3 matrix) |
-| Release-Readiness Score | 94.5 / 100 |
-| Convergence | `readiness.py` streak 3; BUT a post-Panel-9 fix changed code — see caveat |
-| Verdict | **RELEASABLE pending a Panel-10 confirmation** — gates green and CI green, but the Panel-9 decoy fix landed after the panel, so the streak must be re-confirmed on the post-fix tree |
+| Multi-model review panels | 12 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 22 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 10 LOW, 5 NIT |
+| Severity-weighted yield | 15 → 8 → 5.2 → 1 → 6.4 → 5 → 1 → 0 → 1 → 1 → 1.2 → 0.2 |
+| Tests | 278 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~92% coverage. **CI green** (py7zr 1.1.0/1.1.3 matrix) |
+| Release-Readiness Score | 95.8 / 100 |
+| Convergence | clean streak ≥ 2 at full diversity ✓; confidence 1.00 |
+| Verdict | **RELEASABLE** — gates green, CI green, RRS ≥ 90, Panel 12 full-diversity clean on the exact shipping tree |
+
+> **Converged and RELEASABLE on the shipping tree (`a70af86`).** Panel 12 is a
+> full-diversity clean panel directly on the code being shipped (all three models
+> 0 above-NIT; one dismissed cosmetic NIT). The earlier "RELEASABLE" after Panel
+> 8 was on the pre-consolidation tree; it then took a consolidation, a CI fix, and
+> a four-panel fight with one ported feature to honestly re-earn it — see the
+> sections below.
 
 > **Converged.** Panels 7 and 8 are two consecutive full-diversity panels with
 > nothing above LOW (Panel 8 found nothing at all from any model), so the
@@ -50,6 +57,9 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 7 | 1 LOW | 1.0 | Recursive-7z cap-before-filter (documented); duplicate-name read HIGH dismissed — refactor held |
 | 8 | _none_ | 0.0 | Clean at full diversity (broad sweep off the 7z seam) — release gate satisfied (pre-consolidation) |
 | 9 | 1 LOW | 1.0 | Confirmation post-consolidation+CI-fix: 7z extension-detected decoy leaf escaped the filter (fixed); CI red→green |
+| 10 | 1 LOW | 1.0 | flat_used reservation leak in the decoy fix (consensus opus+sonnet; fixed) |
+| 11 | 1 LOW, 1 NIT | 1.2 | 4th issue in the extension feature (cap-before-filter for archive-named) → feature REVERTED to peek/content-sniff |
+| 12 | 1 NIT | 0.2 | Full-diversity clean on the reverted (shipping) tree — RELEASABLE |
 
 ## What each panel found and how it was fixed
 
@@ -266,16 +276,33 @@ always traverse; the no-filter path is unchanged.
 > fix is small/tested, so residual risk is low — but the methodology's whole
 > point is to *measure* that, not assume it.)
 
-## Release decision (v0.1.0)
+## Panels 10–12 — the extension feature, fought and reverted
+
+Panel 9's decoy fix introduced a sibling bug Panel 10 caught (the `flat_used`
+leak, consensus opus+sonnet, fixed). Panel 11 then found a *fourth* issue in the
+same ported feature (the extension-based 7z nested-archive detection): an
+archive-named, oversized, filtered-out member tripped `max_member_bytes` before
+the filter (opus LOW), plus an empty-dir NIT (sonnet). Three straight panels with
+a defect in one feature is a design signal, not bad luck — so per a pre-agreed
+guardrail the feature was **reverted** to the pre-consolidation content-sniff
+(peek) recursion, eliminating all four extension defects at once and restoring
+*more* correct behaviour (a real archive under a non-archive name is recursed
+again). **Panel 12** then confirmed the reverted tree full-diversity clean
+(0 above-NIT; one dismissed cosmetic trailing-dot NIT).
+
+## Release decision (v1.0.0) — RELEASABLE
 
 `python scripts/readiness.py` → **RELEASABLE**: all hard gates green (tests /
-ruff / mypy / no open defects), **RRS 94.3 / 100**, **clean streak 2 of 2** at
-full diversity (confidence 0.86).
+ruff / mypy / no open defects), **CI green** (py7zr 1.1.0/1.1.3 matrix),
+**RRS 95.8 / 100**, **clean streak ≥ 2 at full diversity** (confidence 1.00).
+Panel 12 is a full-diversity clean panel on the **exact shipping tree**
+(`a70af86`); the reverted recursion is the Panels 1–8 code and every other
+component was reviewed clean across Panels 9–12.
 
 **What the convergence signal covers:** the full ZIP, tar, and gzip/bz2/xz
 single-file surfaces, and the **7z** backend (py7zr installed and exercised for
-real across eight panels — it was the richest source of defects and is now the
-most heavily tested).
+real across twelve panels — the richest source of defects and now the most
+heavily tested).
 
 **What it does *not* cover (rests on CI + code review instead):** the **rar
 content path**. This environment has no `rar`/`unrar` binary, so `.rar` fixtures
@@ -283,6 +310,10 @@ can't be created and rar read/extract can't be exercised end-to-end. The rar
 *code* was read every panel; one directory-member `open_stream` asymmetry is
 noted as known-unverified, to confirm and (if real) fix when a rar binary is
 available. Ship-blocking only for callers who rely on the optional rar backend.
+
+**Known cosmetic NITs (below the action threshold, not fixed):** a trailing-dot
+member name (`file.`) yields a `file (1).` collision suffix in flat mode
+(`_split_ext` vs `_extension` disagreement) — pathological input, no data loss.
 
 ## Standing themes
 
@@ -307,6 +338,17 @@ available. Ship-blocking only for callers who rely on the optional rar backend.
   reconstruction (the py7zr ≥ 1.0 workaround). When instances keep coming from
   the same seam, weigh replacing the mechanism (e.g. an in-memory read keyed by
   py7zr's own member name) against patching each instance.
+- **Know when to revert, not patch.** The extension-based 7z detection (ported
+  from another branch) produced a fresh LOW in Panels 9, 10, and 11 — each a new
+  edge case of "guess by name, then write/open/maybe-unwind." A pre-agreed
+  guardrail ("if it recurs once more, revert") meant the 12th panel confirmed a
+  *simpler, content-correct* recursion instead of a fourth patch. Set the
+  ship-vs-continue (and patch-vs-revert) rule **before** you're emotionally
+  invested in the fix.
+- **CI gates ≠ local gates.** `readiness.py` runs *local* pytest; it was blind
+  to the py7zr version matrix and reported RELEASABLE while CI was red for seven
+  commits (py7zr < 1.1 lacks `FileInfo.is_symlink`). A release decision must
+  state CI status explicitly, not infer it from a green local run.
 
 _Maintenance: append a row to the trajectory table and a bullet per new panel;
 keep the TL;DR numbers in sync with `release_readiness.json`._
