@@ -25,6 +25,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"MEDIUM": 2},
       "note": "MEDIUM (consensus, opus+sonnet): truncated gzip/xz leaked a raw EOFError/LZMAError from _SingleFileBackend._streamed_size past the exception hierarchy and crashed the CLI; now normalised to ArchiveReadError. MEDIUM (singleton haiku, reproduced; right-sized from HIGH): an over-NAME_MAX member name raised an uncaught OSError(ENAMETOOLONG) aborting extraction; now recorded in skipped_unsafe. Dismissed: haiku 'CRITICAL' single-file read() ignoring name (harmless single-member leniency; sonnet concurred below-threshold) and a cosmetic return-type NIT."
+    },
+    {
+      "id": "3",
+      "commits": ["b49aaeb"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 1, "NIT": 1},
+      "note": "MEDIUM (singleton sonnet, reproduced): 7z backend never flagged symlink members (is_special hardcoded False) though py7zr exposes is_symlink -- they extracted as empty files, inflated count, skipped skipped_links, and made inspect() raise on escaping symlinks; now detected/skipped like zip/tar (no host-file disclosure since py7zr blocks escapes, hence MEDIUM not HIGH). LOW (opus NIT / haiku MEDIUM, converged): missing-member reads were inconsistent (zip/tar raw KeyError, 7z silent b'', single-file returned payload); normalised to uniform ArchiveReadError + documented, superseding the panel-2 leniency dismissal. NIT (opus): 7z solid-block compressed_size=0 -- same class as the documented tar limitation, extended that LIMITATIONS entry."
     }
   ]
 }

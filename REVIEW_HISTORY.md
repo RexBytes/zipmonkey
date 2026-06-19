@@ -14,19 +14,22 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 2 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 5 — 0 CRITICAL, 1 HIGH, 3 MEDIUM, 1 LOW, 0 NIT |
-| Severity-weighted yield | 15.0 → 8.0 (decaying) |
-| Tests | 255 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; 91.1% coverage. Default no-extras suite: ~242 passing / 5 skipped |
-| Release-Readiness Score | 76.8 / 100 |
-| Convergence | clean streak 0 of 2 required; confidence 0.00; rate 0.53 |
-| Verdict | NOT RELEASABLE — RRS 76.8 < 90, and no full-diversity clean panels yet |
+| Multi-model review panels | 3 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 8 — 0 CRITICAL, 1 HIGH, 4 MEDIUM, 2 LOW, 1 NIT |
+| Severity-weighted yield | 15.0 → 8.0 → 5.2 (decaying, rate 0.35) |
+| Tests | 260 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~244 passing / 5 skipped |
+| Release-Readiness Score | 79.2 / 100 |
+| Convergence | clean streak 0 of 2 required; confidence 0.00; rate 0.35 |
+| Verdict | NOT RELEASABLE — RRS 79.2 < 90, and no full-diversity clean panels yet |
 
-> Two panels in, the severity-weighted yield is decaying (15.0 → 8.0) but both
-> panels still found real defects, so the clean streak is 0. The release rule
+> Three panels in, the severity-weighted yield is decaying steadily
+> (15.0 → 8.0 → 5.2) and the findings are getting shallower (Panel 3's only
+> finding above LOW was a single 7z-symlink MEDIUM), but every panel has still
+> surfaced at least one real defect, so the clean streak is 0. The release rule
 > needs two consecutive full-diversity panels that come back clean (nothing
 > above LOW). The hard gates are all green; the block is the (correctly) unmet
-> convergence/RRS bar, not a known-open defect.
+> convergence/RRS bar, not a known-open defect. The 7z backend (the newest, least
+> symmetric surface) has now yielded a finding in all three panels.
 
 ## Trajectory
 
@@ -36,6 +39,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 |---|---|---|---|
 | 1 | 1 HIGH, 1 MEDIUM, 1 LOW | 15.0 | Optional-dependency API break + backend symmetry gaps |
 | 2 | 2 MEDIUM | 8.0 | Error-normalisation gaps on the single-file backend (truncated streams; over-long names) |
+| 3 | 1 MEDIUM, 1 LOW, 1 NIT | 5.2 | 7z symlink detection; uniform missing-member contract |
 
 ## What each panel found and how it was fixed
 
@@ -81,6 +85,28 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
     security boundary (a single-file archive has exactly one member); sonnet
     independently judged the same area below threshold. The `open_stream`
     return-type asymmetry NIT is cosmetic and already handled by the caller.
+
+- **3 — 7z symlink detection + a uniform missing-member contract (commit
+  `b49aaeb`).**
+  - **MEDIUM (singleton, sonnet — reproduced).** The 7z backend hardcoded
+    `is_special=False`, so symlink members (py7zr exposes `FileInfo.is_symlink`)
+    were never flagged — they extracted as empty regular files, inflated
+    `ExtractResult.count`, never landed in `skipped_links`, and made `inspect()`
+    raise on an escaping symlink. Every other backend (zip/tar/rar) detects
+    symlinks; 7z was the empty cell. Fixed to flag, read-as-empty, and skip them.
+    No host-file disclosure existed (py7zr blocks escaping symlinks), so MEDIUM.
+  - **LOW (opus rated NIT, haiku rated MEDIUM; converged across panels).**
+    Reading a member name not in the archive was inconsistent — zip/tar leaked a
+    raw `KeyError`, 7z silently returned `b""`, and the single-file backend
+    returned the lone member's payload for *any* name. Normalised to one
+    contract: a missing member raises `ArchiveReadError` on every backend, now
+    documented. This supersedes Panel 2's "harmless single-member leniency"
+    dismissal — once the contract is made uniform and written down, the leniency
+    became the outlier worth removing (lesson: make contracts explicit so the
+    same gap stops being re-litigated each panel).
+  - **NIT (opus).** 7z solid-block members report `compressed_size=0` — the same
+    class as the documented tar limitation. Extended that `LIMITATIONS.md` entry
+    to cover 7z solid blocks rather than inventing a per-member number.
 
 ## Standing themes
 
