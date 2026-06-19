@@ -245,6 +245,40 @@ def test_sevenzip_missing_member_raises(tmp_path):
             arc.read("nope.txt")
 
 
+def test_sevenzip_interior_dotdot_member_reads_full_content(tmp_path):
+    # py7zr writes a member to its NORMALISED path, so a member stored as
+    # "docs/../report.txt" lands at "report.txt". Reconstructing the raw name
+    # used to look in a directory that was never created and silently return
+    # b"" -- extracting a 0-byte file (silent data loss). The full bytes must
+    # come back, and the extracted file must match the declared size.
+    py7zr = pytest.importorskip("py7zr")
+    payload = b"X" * 42
+    src = tmp_path / "report.txt"
+    src.write_bytes(payload)
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.write(src, "docs/../report.txt")
+
+    with zipmonkey.open(archive) as arc:
+        assert arc.read("docs/../report.txt") == payload
+    res = zipmonkey.extract(archive, tmp_path / "out")
+    assert res.skipped_unsafe == []  # re-roots in-bounds, not unsafe
+    written = [p for p in (tmp_path / "out").rglob("*") if p.is_file()]
+    assert [p.read_bytes() for p in written] == [payload]
+
+
+def test_sevenzip_directory_open_stream_returns_none(tmp_path):
+    # The _Backend.open_stream contract returns None for directory members.
+    py7zr = pytest.importorskip("py7zr")
+    d = tmp_path / "src" / "sub"
+    d.mkdir(parents=True)
+    archive = tmp_path / "a.7z"
+    with py7zr.SevenZipFile(archive, "w") as zf:
+        zf.write(tmp_path / "src" / "sub", "sub")
+    with zipmonkey.open(archive) as arc:
+        assert arc._backend.open_stream("sub") is None
+
+
 def test_sevenzip_byte_cap_preflight(tmp_path):
     archive = _make_7z(tmp_path, {"big.bin": b"\x00" * (2 * 1024 * 1024)})
     # Declared uncompressed size (2 MiB) exceeds the cap -> rejected.

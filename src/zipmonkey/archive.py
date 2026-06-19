@@ -15,6 +15,7 @@ import errno
 import fnmatch
 import gzip
 import lzma
+import os
 import shutil
 import stat
 import tarfile
@@ -183,8 +184,12 @@ class _ZipBackend(_Backend):
             return fh.read(n)
 
     def open_stream(self, name: str) -> BinaryIO | None:
-        if self._is_special(name):
-            return None
+        try:
+            is_dir = self._zf.getinfo(name).is_dir()
+        except KeyError:
+            is_dir = False
+        if is_dir or self._is_special(name):
+            return None  # dirs/specials have no content stream (interface)
         return self._zf.open(name)  # type: ignore[return-value]
 
     def close(self) -> None:
@@ -381,6 +386,11 @@ class _SevenZipBackend(_Backend):
                 f"{path}"
             ) from exc
         self._names = {item.filename for item in self._info}
+        self._dirs = {
+            item.filename
+            for item in self._info
+            if getattr(item, "is_directory", False)
+        }
         # py7zr exposes FileInfo.is_symlink; flag those as special so they are
         # skipped (not materialised) and read as empty, exactly like the ZIP/tar
         # backends. getattr keeps it working on py7zr versions lacking the field.
@@ -431,7 +441,16 @@ class _SevenZipBackend(_Backend):
                     self._path, mode="r", password=self._password
                 ) as zf:
                     zf.extract(path=td, targets=[name])
-                target = Path(td) / name
+                # py7zr writes a member to its NORMALISED path (it collapses an
+                # interior "docs/../report.txt" to "report.txt"), so reconstruct
+                # the same normalised path — joining the raw name would look for
+                # a file that was never written there and silently read b"".
+                norm = os.path.normpath(name)
+                if os.path.isabs(norm) or norm.startswith(".."):
+                    # Would resolve outside the temp dir; py7zr refuses to write
+                    # such members anyway, so there is nothing to read.
+                    return b""
+                target = Path(td) / norm
                 return target.read_bytes() if target.is_file() else b""
         except Exception as exc:
             raise _as_read_error(name, exc) from exc
@@ -439,9 +458,11 @@ class _SevenZipBackend(_Backend):
     def peek(self, name: str, n: int) -> bytes:
         return self.read(name)[:n]
 
-    def open_stream(self, name: str) -> BinaryIO:
+    def open_stream(self, name: str) -> BinaryIO | None:
         import io
 
+        if name in self._dirs or name in self._specials:
+            return None  # dirs/specials have no content stream (interface)
         return io.BytesIO(self.read(name))
 
     def close(self) -> None:
@@ -1135,7 +1156,17 @@ class Archive:
             result.skipped_unsafe.append(name)
             return None
         if ctx.flat:
-            return dest / _unique_basename(resolved.name, dest, flat_used)
+            # In flat mode the (collision-suffixed) basename can exceed the
+            # filesystem NAME_MAX; the .exists() probe inside _unique_basename
+            # then raises ENAMETOOLONG. Record it as unsafe rather than aborting
+            # the whole extraction, matching _prepare_target's non-flat handling.
+            try:
+                return dest / _unique_basename(resolved.name, dest, flat_used)
+            except OSError as exc:
+                if exc.errno == errno.ENAMETOOLONG:
+                    result.skipped_unsafe.append(name)
+                    return None
+                raise
         return resolved
 
     def _prepare_target(self, target: Path) -> str:
@@ -1251,9 +1282,20 @@ class Archive:
             sub_dest = top_dest
             sub_flat_used = flat_used
         else:
-            sub_dest = _unique_dir(
-                archive_path.with_name(archive_path.name + "_extracted")
-            )
+            try:
+                sub_dest = _unique_dir(
+                    archive_path.with_name(archive_path.name + "_extracted")
+                )
+            except OSError as exc:
+                if exc.errno != errno.ENAMETOOLONG:
+                    raise
+                # The "<name>_extracted" dir name exceeds NAME_MAX, so this
+                # container cannot be unpacked. It is on disk; reclassify it from
+                # nested_extracted (recorded above) to skipped_nested (un-unpacked
+                # container) and stop, instead of crashing the whole extraction.
+                result.nested_extracted.remove(archive_path)
+                result.skipped_nested.append(str(archive_path))
+                return True
             sub_flat_used = set()
 
         try:

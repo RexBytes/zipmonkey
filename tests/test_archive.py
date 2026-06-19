@@ -397,6 +397,49 @@ def test_overlong_member_name_skipped_not_crash(tmp_path):
     assert res2.skipped_unsafe == [longname]
 
 
+def test_overlong_flatmode_collision_skipped_not_crash(tmp_path):
+    # Flat mode suffixes " (n)" on a basename collision; if that pushes the
+    # candidate past NAME_MAX the .exists() probe used to raise a raw
+    # OSError(ENAMETOOLONG), aborting extraction. It must be recorded skipped,
+    # mirroring the non-flat path (the sibling that hid behind the first fix).
+    base = "a" * 252  # 252 + " (1)" = 256 > NAME_MAX(255)
+    z = tmp_path / "flat.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr(f"dir1/{base}", b"FIRST")
+        zf.writestr(f"dir2/{base}", b"SECOND")  # collides in flat mode
+    res = zipmonkey.extract(z, tmp_path / "out", flat=True)
+    assert res.count == 1
+    assert len(res.skipped_unsafe) == 1
+
+
+def test_overlong_nested_extract_dir_skipped_not_crash(tmp_path):
+    # Recursive (non-flat) mode names the contents dir "<archive>_extracted";
+    # if that exceeds NAME_MAX the _unique_dir probe used to crash. The
+    # container must be reclassified to skipped_nested (not nested_extracted),
+    # and written_count must stay consistent.
+    inner = tmp_path / "inner.zip"
+    with zipfile.ZipFile(inner, "w") as zf:
+        zf.writestr("leaf.txt", b"content")
+    inner_name = "x" * 246 + ".zip"  # +"_extracted" = 260 > NAME_MAX
+    outer = tmp_path / "outer.zip"
+    with zipfile.ZipFile(outer, "w") as zf:
+        zf.write(inner, inner_name)
+    res = zipmonkey.extract(outer, tmp_path / "out", recursive=True)
+    assert len(res.skipped_nested) == 1
+    assert res.nested_extracted == []
+    assert res.written_count == 1
+
+
+def test_zip_directory_open_stream_returns_none(tmp_path):
+    # The _Backend.open_stream contract returns None for directory members.
+    z = tmp_path / "d.zip"
+    with zipfile.ZipFile(z, "w") as zf:
+        zf.writestr("dir/", "")
+        zf.writestr("dir/f.txt", b"hi")
+    with zipmonkey.open(z) as arc:
+        assert arc._backend.open_stream("dir/") is None
+
+
 def test_open_member_directory_returns_empty_stream(tmp_path):
     z = tmp_path / "d.zip"
     with zipfile.ZipFile(z, "w") as zf:
