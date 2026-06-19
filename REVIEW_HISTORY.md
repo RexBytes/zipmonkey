@@ -14,23 +14,22 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 5 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 14 — 0 CRITICAL, 1 HIGH, 5 MEDIUM, 5 LOW, 3 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 (non-monotonic) |
-| Tests | 266 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~248 passing / 5 skipped |
-| Release-Readiness Score | 78.2 / 100 |
-| Convergence | clean streak 0 of 2 required (RESET by Panel 5); confidence 0.00; rate 0.43 |
-| Verdict | NOT RELEASABLE — Panel 5 found a MEDIUM, resetting the clean streak |
+| Multi-model review panels | 6 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 16 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 6 LOW, 3 NIT |
+| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 (non-monotonic) |
+| Tests | 270 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~250 passing / 5 skipped |
+| Release-Readiness Score | 79.3 / 100 |
+| Convergence | clean streak 0 of 2 required; confidence 0.00; rate 0.33 |
+| Verdict | NOT RELEASABLE — Panels 5 & 6 each found a MEDIUM; clean streak still 0 |
 
-> **Panel 5 is why the gate requires _two_ consecutive clean panels.** After
-> Panel 4's near-clean (RRS had crossed 90, streak 1), the deciding panel —
-> instructed to try hardest — surfaced a **silent data-loss MEDIUM** (7z
-> interior-`..` members extracting as empty files) plus two `ENAMETOOLONG`
-> crash LOWs that were siblings of a Panel-2 fix. The yield jumped 1.0 → 6.4
-> (convergence is non-monotonic, exactly as documented), the streak reset to 0,
-> and RRS fell back to 78.2. Had the rule been "one clean panel," we would have
-> shipped silent data loss. All five findings are now fixed with regression
-> tests; the gate needs two fresh consecutive clean panels from here.
+> Panels 5 and 6 both surfaced a 7z **silent data-loss MEDIUM**, and Panel 6's
+> was a *regression introduced by Panel 5's own fix*: the interior-`..` escape
+> guard used a raw two-dot string-prefix that swallowed legitimate basenames
+> (`..notes.txt`). The recurring source is the same: `_SevenZipBackend.read`'s
+> extract-to-temp + path-reconstruction strategy (the py7zr ≥ 1.0 workaround).
+> Each finding is fixed with a regression test, but the surface keeps yielding —
+> a signal that the workaround's design, not just its instances, is the risk.
+> The gate needs two fresh consecutive clean panels from here.
 
 ## Trajectory
 
@@ -43,6 +42,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 3 | 1 MEDIUM, 1 LOW, 1 NIT | 5.2 | 7z symlink detection; uniform missing-member contract |
 | 4 | 1 LOW | 1.0 | Encrypted-header 7z password mislabel (first clean panel) |
 | 5 | 1 MEDIUM, 2 LOW, 2 NIT | 6.4 | 7z interior-`..` silent data loss; flat/recursive ENAMETOOLONG siblings; dir open_stream contract |
+| 6 | 1 MEDIUM, 1 LOW | 5.0 | 7z `..`-prefixed basename loss (Panel-5 fix regression); overwrite=False collision bucket |
 
 ## What each panel found and how it was fixed
 
@@ -144,6 +144,21 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
     instead of `None` for directory members, violating the `_Backend` interface
     (no functional impact). Fixed for contract conformance and symmetry.
 
+- **6 — a fix that spawned a sibling bug (commit `7db1582`).** haiku found
+  nothing.
+  - **MEDIUM (opus, reproduced).** Panel 5's interior-`..` escape guard
+    (`norm.startswith("..")`) was a raw string-prefix test, so it also swallowed
+    legitimate 7z basenames that merely begin with two dots (`..notes.txt`,
+    `...txt`, `..foo`), reading them as `b""` — a *new* silent-data-loss instance
+    of the very class the guard fixed. Tightened to reject only a true leading
+    `..` path component (`norm == ".."` or `norm.startswith(".." + os.sep)`).
+  - **LOW (sonnet, reproduced).** With `overwrite=False`, a same-archive
+    normalised duplicate (`a.txt` + `./a.txt`) was bucketed as `skipped_existing`
+    instead of `skipped_collisions` because the overwrite/exists test ran before
+    the same-session `written_targets` check. Data was always correct (first
+    wins); reordered the two checks. A genuinely pre-existing file still lands in
+    `skipped_existing`.
+
 ## Standing themes
 
 - **Blind spots are real and expensive.** The HIGH was invisible to a green
@@ -157,6 +172,16 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   that removed an API you call (lesson 7, manifested here exactly).
 - **Honest bookkeeping.** A broken sandbox `rarfile`/cryptography import (pyo3
   panic) was correctly excluded as an environment artifact, not a zipmonkey bug.
+- **A fix can spawn a sibling bug.** Panel 6's MEDIUM was a regression in Panel
+  5's own fix (an over-broad `..` string-prefix guard). Re-review the next panel
+  with the previous panel's *fixes* themselves in scope, not just the original
+  code.
+- **A recurring source is a design signal, not just bad luck.** The 7z backend
+  yielded in five of six panels; the data-loss cases (Panels 5–6) all trace to
+  one design choice — `_SevenZipBackend.read`'s extract-to-temp + path
+  reconstruction (the py7zr ≥ 1.0 workaround). When instances keep coming from
+  the same seam, weigh replacing the mechanism (e.g. an in-memory read keyed by
+  py7zr's own member name) against patching each instance.
 
 _Maintenance: append a row to the trajectory table and a bullet per new panel;
 keep the TL;DR numbers in sync with `release_readiness.json`._
