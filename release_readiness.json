@@ -18,6 +18,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"HIGH": 1, "MEDIUM": 1, "LOW": 1},
       "note": "First panel. HIGH (consensus, 3 models): 7z backend broken against py7zr>=1.0 which removed SevenZipFile.read() (default suite blind, tests skip without py7zr). MEDIUM (singleton, reproduced): ZIP symlinks read as link-target bytes, not b'', violating the special-member-empty contract the tar backend honoured. LOW: _human_size emitted '1024.0P' past the petabyte unit."
+    },
+    {
+      "id": "2",
+      "commits": ["4ac5217"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 2},
+      "note": "MEDIUM (consensus, opus+sonnet): truncated gzip/xz leaked a raw EOFError/LZMAError from _SingleFileBackend._streamed_size past the exception hierarchy and crashed the CLI; now normalised to ArchiveReadError. MEDIUM (singleton haiku, reproduced; right-sized from HIGH): an over-NAME_MAX member name raised an uncaught OSError(ENAMETOOLONG) aborting extraction; now recorded in skipped_unsafe. Dismissed: haiku 'CRITICAL' single-file read() ignoring name (harmless single-member leniency; sonnet concurred below-threshold) and a cosmetic return-type NIT."
     }
   ]
 }

@@ -14,18 +14,19 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 1 (3 models: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 3 — 0 CRITICAL, 1 HIGH, 1 MEDIUM, 1 LOW, 0 NIT |
-| Severity-weighted yield | 15.0 (Panel 1 baseline) |
-| Tests | 251 passing / 1 skipped with py7zr present (7z surface exercised); ruff + mypy clean; 90.9% coverage. Default no-extras suite: 240 passing / 5 skipped |
-| Release-Readiness Score | 71.0 / 100 |
-| Convergence | clean streak 0 of 2 required; confidence 0.00 |
-| Verdict | NOT RELEASABLE — RRS 71.0 < 90, and no full-diversity clean panels yet |
+| Multi-model review panels | 2 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 5 — 0 CRITICAL, 1 HIGH, 3 MEDIUM, 1 LOW, 0 NIT |
+| Severity-weighted yield | 15.0 → 8.0 (decaying) |
+| Tests | 255 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; 91.1% coverage. Default no-extras suite: ~242 passing / 5 skipped |
+| Release-Readiness Score | 76.8 / 100 |
+| Convergence | clean streak 0 of 2 required; confidence 0.00; rate 0.53 |
+| Verdict | NOT RELEASABLE — RRS 76.8 < 90, and no full-diversity clean panels yet |
 
-> Panel 1 found three real defects, so the convergence signal is still 0 by
-> design — the release rule needs two consecutive full-diversity panels that
-> come back clean (nothing above LOW). The hard gates are all green; the block
-> is the (correctly) unmet convergence/RRS bar, not a known-open defect.
+> Two panels in, the severity-weighted yield is decaying (15.0 → 8.0) but both
+> panels still found real defects, so the clean streak is 0. The release rule
+> needs two consecutive full-diversity panels that come back clean (nothing
+> above LOW). The hard gates are all green; the block is the (correctly) unmet
+> convergence/RRS bar, not a known-open defect.
 
 ## Trajectory
 
@@ -34,6 +35,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | Panel | Findings | Weighted | Theme |
 |---|---|---|---|
 | 1 | 1 HIGH, 1 MEDIUM, 1 LOW | 15.0 | Optional-dependency API break + backend symmetry gaps |
+| 2 | 2 MEDIUM | 8.0 | Error-normalisation gaps on the single-file backend (truncated streams; over-long names) |
 
 ## What each panel found and how it was fixed
 
@@ -56,6 +58,29 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
     last unit, emitting `"1024.0P"` for ≥ 1 EiB inputs. Fixed by extending the
     unit ladder through E/Z/Y.
   - Each fix landed with a regression test pinning the restored contract.
+
+- **2 — error-normalisation gaps on the single-file backend (commit `4ac5217`).**
+  - **MEDIUM (consensus, opus + sonnet — reproduced).** A truncated/corrupt
+    gzip or xz stream passes `validate()` (one byte decodes) but then raised a
+    raw `EOFError`/`LZMAError` from `_SingleFileBackend._streamed_size()` when
+    `entries()`/`inspect()`/`namelist()` stream the payload to size it —
+    escaping the documented exception hierarchy and crashing the CLI with an
+    uncaught traceback. The single-file backend was the lone cell where
+    `entries()` itself decompresses (ZIP/tar read only metadata), so the read
+    guard was bypassed — another symmetry gap. Fixed by wrapping the loop in
+    `_DECOMP_ERRORS` and re-raising as `ArchiveReadError`.
+  - **MEDIUM (singleton, haiku — reproduced; right-sized from its "HIGH").** A
+    member whose basename exceeds the filesystem `NAME_MAX` raised an uncaught
+    `OSError(ENAMETOOLONG)` from `_prepare_target`, aborting the whole
+    extraction and discarding the result — while every other unplaceable member
+    (unsafe path, collision, special) is recorded and skipped. Fixed by catching
+    `ENAMETOOLONG` (now probed first, so the `overwrite=False` existence check
+    can't trip it either) and recording the member in `skipped_unsafe`.
+  - **Dismissed with reason:** haiku's "CRITICAL" — `_SingleFileBackend.read()`
+    ignoring the member name — is harmless single-member leniency, not a
+    security boundary (a single-file archive has exactly one member); sonnet
+    independently judged the same area below threshold. The `open_stream`
+    return-type asymmetry NIT is cosmetic and already handled by the caller.
 
 ## Standing themes
 
