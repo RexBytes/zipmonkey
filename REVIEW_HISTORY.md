@@ -14,22 +14,24 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 6 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 16 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 6 LOW, 3 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 (non-monotonic) |
-| Tests | 270 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~250 passing / 5 skipped |
-| Release-Readiness Score | 79.3 / 100 |
-| Convergence | clean streak 0 of 2 required; confidence 0.00; rate 0.33 |
-| Verdict | NOT RELEASABLE — Panels 5 & 6 each found a MEDIUM; clean streak still 0 |
+| Multi-model review panels | 7 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 17 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 7 LOW, 3 NIT |
+| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 → 1.0 |
+| Tests | 273 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~250 passing / 5 skipped |
+| Release-Readiness Score | 90.6 / 100 |
+| Convergence | clean streak 1 of 2 required; confidence 0.63; rate 0.07 |
+| Verdict | NOT RELEASABLE — gates green and RRS ≥ 90; need 1 more consecutive clean panel |
 
-> Panels 5 and 6 both surfaced a 7z **silent data-loss MEDIUM**, and Panel 6's
-> was a *regression introduced by Panel 5's own fix*: the interior-`..` escape
-> guard used a raw two-dot string-prefix that swallowed legitimate basenames
-> (`..notes.txt`). The recurring source is the same: `_SevenZipBackend.read`'s
-> extract-to-temp + path-reconstruction strategy (the py7zr ≥ 1.0 workaround).
-> Each finding is fixed with a regression test, but the surface keeps yielding —
-> a signal that the workaround's design, not just its instances, is the risk.
-> The gate needs two fresh consecutive clean panels from here.
+> After Panels 5–6 kept extracting silent data-loss MEDIUMs from the same seam,
+> the `_SevenZipBackend.read` mechanism was **root-cause refactored** (commit
+> `d3cd07a`) from extract-to-temp + path-reconstruction to an in-memory
+> `BytesIOFactory` read keyed by py7zr's own member name — removing the whole
+> mismatch class rather than patching instances. **Panel 7 is the proof it
+> worked:** opus attacked the new read path directly and found nothing; the only
+> finding was a niche recursive-7z cap/filter ordering LOW (documented), and a
+> haiku "HIGH" duplicate-name read was dismissed (2-of-3 consensus: by-name APIs
+> can't disambiguate duplicates; extraction loses nothing). Weighted yield back
+> to 1.0, RRS ≥ 90, clean streak 1. One more clean panel ships it.
 
 ## Trajectory
 
@@ -43,6 +45,8 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 4 | 1 LOW | 1.0 | Encrypted-header 7z password mislabel (first clean panel) |
 | 5 | 1 MEDIUM, 2 LOW, 2 NIT | 6.4 | 7z interior-`..` silent data loss; flat/recursive ENAMETOOLONG siblings; dir open_stream contract |
 | 6 | 1 MEDIUM, 1 LOW | 5.0 | 7z `..`-prefixed basename loss (Panel-5 fix regression); overwrite=False collision bucket |
+| — | _root-cause refactor_ | — | 7z read → in-memory BytesIOFactory keyed by member name (commit `d3cd07a`) |
+| 7 | 1 LOW | 1.0 | Recursive-7z cap-before-filter (documented); duplicate-name read HIGH dismissed — refactor held |
 
 ## What each panel found and how it was fixed
 
@@ -158,6 +162,29 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
     the same-session `written_targets` check. Data was always correct (first
     wins); reordered the two checks. A genuinely pre-existing file still lands in
     `skipped_existing`.
+
+- **Root-cause refactor (between Panels 6 and 7, commit `d3cd07a`).** Rather than
+  patch a *seventh* instance of the 7z path-reconstruction class, replaced the
+  mechanism: `_SevenZipBackend.read` now reads each member in-memory via py7zr's
+  `BytesIOFactory`, keyed by py7zr's own member name (py7zr 0.x keeps `read()`).
+  There is no path to reconstruct, so the interior-`..` and dot-prefixed
+  data-loss cases — and any future variant — are gone by construction.
+
+- **7 — the refactor holds; first clean panel of the new streak (commit
+  `ab4de25`).** opus attacked the new `BytesIOFactory` read path directly (the
+  `factory.get` key-mismatch surface, normalization-duplicate names, the `limit`
+  boundary, hostile externally-crafted names) and found **nothing** — strong
+  evidence the mechanism change closed the seam. No code defects.
+  - **LOW (sonnet, reproduced) → documented.** Under `recursive=True` the
+    non-streaming 7z backend enforces `max_member_bytes` before the leaf filter
+    (every member must be materialised to sniff for nesting; containers bypass
+    leaf filters). Not cleanly fixable without breaking a documented invariant;
+    recorded as an intentional cost-of-fix tradeoff in `LIMITATIONS.md`.
+  - **Dismissed (haiku rated "HIGH").** Reading a duplicate member name returns
+    one member. opus and sonnet both independently judged it correct; a by-name
+    API cannot disambiguate two members sharing a name, and extraction preserves
+    both (`skipped_collisions`). Documented as a fundamental-ambiguity limitation.
+    Both behaviours pinned with golden-behaviour tests.
 
 ## Standing themes
 
