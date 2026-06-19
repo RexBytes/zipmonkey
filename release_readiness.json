@@ -39,6 +39,13 @@
       "models": ["opus", "sonnet", "haiku"],
       "findings": {"LOW": 1},
       "note": "Near-clean panel: sonnet and haiku found ZERO defects; opus found one LOW. LOW (singleton opus, reproduced): an encrypted-header 7z with a missing password was mislabeled with the generic 'corrupt or unsupported 7z archive' message (indistinguishable from a genuinely bad file) and surfaced at open time; now raises UnsupportedArchiveError naming the password cause, with the open() docstring amended. Wrong-password keeps the generic path (garbage-parse, indistinguishable from corruption). Read-only-unverified rar observations were noted but not actionable without the rar binary. First below-tau (clean) panel: weighted yield 1.0."
+    },
+    {
+      "id": "5",
+      "commits": ["7a17097"],
+      "models": ["opus", "sonnet", "haiku"],
+      "findings": {"MEDIUM": 1, "LOW": 2, "NIT": 2},
+      "note": "Gate-deciding panel broke it open (yield non-monotonic 1.0 -> 6.4): proof that Panel 4's near-clean alone was not convergence, and why two consecutive clean panels are required. MEDIUM (opus, reproduced): 7z member with an interior '..' (docs/../report.txt) extracted as an EMPTY file -- silent data loss; py7zr writes the normalised path while read() reconstructed the raw name; fixed via os.path.normpath. LOW x2 (sonnet, reproduced): the ENAMETOOLONG class Panel 2 fixed for the non-flat path still crashed the flat-mode (_unique_basename) and recursive (_unique_dir) siblings -- the exact 'flat-mode crash that hid behind the non-flat one'; now recorded in skipped_unsafe / skipped_nested. NIT x2 (haiku, reproduced): ZIP and 7z open_stream returned a stream not None for directory members (interface-contract violation, no functional impact); fixed for symmetry. Clean streak RESET to 0."
     }
   ]
 }

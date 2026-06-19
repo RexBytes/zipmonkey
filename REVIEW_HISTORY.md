@@ -14,21 +14,23 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 4 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 9 — 0 CRITICAL, 1 HIGH, 4 MEDIUM, 3 LOW, 1 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 (decaying, rate 0.07) |
-| Tests | 261 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~245 passing / 5 skipped |
-| Release-Readiness Score | 90.6 / 100 |
-| Convergence | clean streak 1 of 2 required; confidence 0.63; rate 0.07 |
-| Verdict | NOT RELEASABLE — gates green and RRS ≥ 90, but need 1 more consecutive clean panel |
+| Multi-model review panels | 5 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 14 — 0 CRITICAL, 1 HIGH, 5 MEDIUM, 5 LOW, 3 NIT |
+| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 (non-monotonic) |
+| Tests | 266 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~248 passing / 5 skipped |
+| Release-Readiness Score | 78.2 / 100 |
+| Convergence | clean streak 0 of 2 required (RESET by Panel 5); confidence 0.00; rate 0.43 |
+| Verdict | NOT RELEASABLE — Panel 5 found a MEDIUM, resetting the clean streak |
 
-> Four panels in, the package has crossed RRS ≥ 90 and recorded its **first
-> below-tau (clean) panel**: Panel 4 returned only a single LOW (two of three
-> models found nothing). The yield has decayed 15.0 → 8.0 → 5.2 → 1.0. The sole
-> remaining blocker is the clean-streak rule — it requires **two consecutive**
-> full-diversity panels with nothing above LOW, and we now have one. One more
-> clean panel makes this RELEASABLE. The hard gates are all green; there is no
-> known-open defect.
+> **Panel 5 is why the gate requires _two_ consecutive clean panels.** After
+> Panel 4's near-clean (RRS had crossed 90, streak 1), the deciding panel —
+> instructed to try hardest — surfaced a **silent data-loss MEDIUM** (7z
+> interior-`..` members extracting as empty files) plus two `ENAMETOOLONG`
+> crash LOWs that were siblings of a Panel-2 fix. The yield jumped 1.0 → 6.4
+> (convergence is non-monotonic, exactly as documented), the streak reset to 0,
+> and RRS fell back to 78.2. Had the rule been "one clean panel," we would have
+> shipped silent data loss. All five findings are now fixed with regression
+> tests; the gate needs two fresh consecutive clean panels from here.
 
 ## Trajectory
 
@@ -40,6 +42,7 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 2 | 2 MEDIUM | 8.0 | Error-normalisation gaps on the single-file backend (truncated streams; over-long names) |
 | 3 | 1 MEDIUM, 1 LOW, 1 NIT | 5.2 | 7z symlink detection; uniform missing-member contract |
 | 4 | 1 LOW | 1.0 | Encrypted-header 7z password mislabel (first clean panel) |
+| 5 | 1 MEDIUM, 2 LOW, 2 NIT | 6.4 | 7z interior-`..` silent data loss; flat/recursive ENAMETOOLONG siblings; dir open_stream contract |
 
 ## What each panel found and how it was fixed
 
@@ -122,6 +125,24 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
   reproducible without the `rar` binary, so per the rules of evidence they were
   not acted on; recorded here as known-unverified to revisit if the rar content
   path becomes testable.
+
+- **5 — the gate earns its keep (commit `7a17097`).** The deciding panel, told to
+  try hardest, broke Panel 4's apparent convergence.
+  - **MEDIUM (opus, reproduced).** A 7z member stored with an interior `..`
+    (`docs/../report.txt`) extracted as an **empty file** — silent data loss.
+    py7zr writes the *normalised* path (`report.txt`) while `_SevenZipBackend.read`
+    reconstructed the raw name and found nothing, returning `b""`; `safe_target`
+    re-roots it in-bounds so it wasn't even flagged unsafe. Fixed with
+    `os.path.normpath` (plus an escape guard). This was a latent flaw in the
+    Panel-1 extract-to-temp workaround.
+  - **LOW ×2 (sonnet, reproduced).** The `ENAMETOOLONG` class Panel 2 fixed for
+    the non-flat path still crashed its **flat** (`_unique_basename`) and
+    **recursive** (`_unique_dir`) siblings — the literal "flat-mode over-long-name
+    crash that hid behind the non-flat one" this project's methodology cites.
+    Now recorded in `skipped_unsafe` / `skipped_nested`.
+  - **NIT ×2 (haiku, reproduced).** ZIP and 7z `open_stream` returned a stream
+    instead of `None` for directory members, violating the `_Backend` interface
+    (no functional impact). Fixed for contract conformance and symmetry.
 
 ## Standing themes
 
