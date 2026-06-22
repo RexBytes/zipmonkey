@@ -211,6 +211,26 @@ def test_flatten_collisions(zip_factory, tmp_path):
     assert {p.read_bytes() for p in contents} == {b"1", b"2", b"3"}
 
 
+def test_flatten_collision_trailing_dot_name(zip_factory, tmp_path):
+    # A trailing-dot member name has no extension (matching detect._extension),
+    # so the collision suffix must not land on a bare dot ("file (1)."); it goes
+    # after the whole name ("file. (1)").
+    z = zip_factory("a.zip", {"x/file.": b"1", "y/file.": b"2"})
+    res = zipmonkey.extract(z, tmp_path / "out", flat=True)
+    assert {p.name for p in res.extracted} == {"file.", "file. (1)"}
+    assert {p.read_bytes() for p in (tmp_path / "out").iterdir()} == {b"1", b"2"}
+
+
+def test_flatten_collision_multidot_trailing_dot_name(zip_factory, tmp_path):
+    # A name with interior dots AND a trailing dot ("a.b.c.") keeps the trailing
+    # dot inside the extension so the rename is lossless: the suffix lands as
+    # "a.b (1).c." (stem + ext == basename), never dropping the trailing dot.
+    z = zip_factory("a.zip", {"x/a.b.c.": b"1", "y/a.b.c.": b"2"})
+    res = zipmonkey.extract(z, tmp_path / "out", flat=True)
+    assert {p.name for p in res.extracted} == {"a.b.c.", "a.b (1).c."}
+    assert {p.read_bytes() for p in (tmp_path / "out").iterdir()} == {b"1", b"2"}
+
+
 # -- extract: recursive ----------------------------------------------------- #
 
 

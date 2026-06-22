@@ -28,12 +28,7 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from .artifacts import is_os_artifact
-from .detect import (
-    category_for,
-    detect_type,
-    is_archive_type,
-    looks_like_archive,
-)
+from .detect import category_for, detect_type, is_archive_type
 from .models import ArchiveEntry, ExtractResult, InspectReport, TypedFile
 from .safety import (
     DEFAULT_MAX_DEPTH,
@@ -439,24 +434,21 @@ class _SevenZipBackend(_Backend):
             raise _as_read_error(name, exc) from exc
 
     def _read_member(self, name: str) -> bytes:
-        # py7zr >= 1.0 removed SevenZipFile.read()/readall(). Capture the member
-        # straight into memory via BytesIOFactory, keyed by py7zr's OWN member
-        # name -- no temp files and no path reconstruction. The previous
-        # extract-to-temp-then-Path(td)/name approach had to re-derive py7zr's
-        # on-disk normalisation and silently returned b"" whenever the guess was
-        # wrong (interior "..", or basenames beginning with dots): two distinct
-        # silent-data-loss defects. Reading by the archive's own member name has
-        # no such gap. py7zr 0.x lacks the factory but still has read().
+        # Capture the member straight into memory via py7zr's BytesIOFactory,
+        # keyed by py7zr's OWN member name -- no temp files and no path
+        # reconstruction. (The old extract-to-temp-then-Path(td)/name approach
+        # had to re-derive py7zr's on-disk normalisation and silently returned
+        # b"" whenever the guess was wrong -- interior ".." or dot-prefixed
+        # basenames -- two distinct silent-data-loss defects. Reading by the
+        # archive's own member name has no such gap.) py7zr >= 1.1 is required
+        # (BytesIOFactory and FileInfo.is_symlink both landed by 1.1.0).
         py7zr = self._py7zr
-        factory_cls = getattr(getattr(py7zr, "io", None), "BytesIOFactory", None)
+        factory = py7zr.io.BytesIOFactory(limit=sys.maxsize)
         with py7zr.SevenZipFile(
             self._path, mode="r", password=self._password
         ) as zf:
-            if factory_cls is not None:
-                factory = factory_cls(limit=sys.maxsize)
-                zf.extract(targets=[name], factory=factory)
-                return factory.get(name).read()
-            return zf.read([name])[name].read()  # py7zr 0.x
+            zf.extract(targets=[name], factory=factory)
+            return factory.get(name).read()
 
     def peek(self, name: str, n: int) -> bytes:
         return self.read(name)[:n]
@@ -706,7 +698,14 @@ def _passes_filter(
 
 
 def _split_ext(basename: str) -> tuple[str, str]:
-    dot = basename.rfind(".")
+    # Locate the split on the trailing-dot-stripped name so a bare trailing dot
+    # is never treated as the extension: "file." has no extension and a collision
+    # suffix lands after the whole name ("file. (1)", not "file (1)."). The split
+    # *index* is found the same way as detect._extension, but unlike _extension we
+    # keep any trailing dots inside ext so stem + ext == basename exactly and the
+    # rename stays lossless (e.g. "report.xlsx." -> ("report", ".xlsx."),
+    # collision "report (1).xlsx.").
+    dot = basename.rstrip(".").rfind(".")
     if dot > 0:
         return basename[:dot], basename[dot:]
     return basename, ""
@@ -1052,24 +1051,19 @@ class Archive:
 
             is_arc = False
             if recursive:
-                if backend.streaming:
-                    # Cheap to peek: sniff nested archives by magic bytes. Pass
-                    # the filename so zip-container documents (xlsx/docx/jar/…)
-                    # stay leaves, not unpacked as raw zips.
-                    try:
-                        head = backend.peek(e.name, _PEEK_BYTES)
-                    except _READ_ERRORS as exc:
-                        raise _as_read_error(e.name, exc) from exc
-                    is_arc = is_archive_type(detect_type(head, filename=e.name))
-                else:
-                    # Non-streaming (7z): peeking would materialise the whole
-                    # member, so detect nested archives by extension instead.
-                    # This keeps the filter/cap preflight uniform with streaming
-                    # backends — a filtered or oversized member is never
-                    # materialised just to sniff it — and the write-time caps
-                    # still bound the real reads. The tradeoff: a nested archive
-                    # with a non-archive extension is treated as a leaf.
-                    is_arc = looks_like_archive(e.name)
+                # A non-streaming backend (7z) materialises the whole member to
+                # peek it, so enforce the per-member cap *before* peeking.
+                if not backend.streaming:
+                    check_member_bytes(
+                        e.size, ctx.max_member_bytes, e.name, partial_result=result
+                    )
+                try:
+                    head = backend.peek(e.name, _PEEK_BYTES)
+                except _READ_ERRORS as exc:
+                    raise _as_read_error(e.name, exc) from exc
+                # Pass the filename so zip-container documents (xlsx/docx/jar/…)
+                # are classified as leaves, not unpacked as raw zips.
+                is_arc = is_archive_type(detect_type(head, filename=e.name))
 
             # The include/exclude filter applies to leaf files only; archive
             # containers are always traversed so a leaf filter reaches inside.
@@ -1137,8 +1131,8 @@ class Archive:
             if is_arc:
                 if ctx.max_depth <= 0 or depth + 1 <= ctx.max_depth:
                     # _recurse_one records the container in nested_extracted as
-                    # soon as it opens; a False return means archive magic but
-                    # not a valid archive, so it is really a leaf.
+                    # soon as it opens; a False return means it did not open as a
+                    # valid archive, so it is really a leaf.
                     if not self._recurse_one(
                         archive_path=target,
                         top_dest=dest,

@@ -14,13 +14,24 @@ a bullet below, and the TL;DR numbers are re-derived from
 
 | Metric | Value |
 |---|---|
-| Multi-model review panels | 8 (3 models each: opus, sonnet, haiku) |
-| Confirmed findings (panels) | 17 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 7 LOW, 3 NIT |
-| Severity-weighted yield | 15.0 → 8.0 → 5.2 → 1.0 → 6.4 → 5.0 → 1.0 → 0.0 |
-| Tests | 273 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~91% coverage. Default no-extras suite: ~250 passing / 5 skipped |
-| Release-Readiness Score | 94.3 / 100 |
-| Convergence | clean streak 2 of 2 ✓; confidence 0.86; rate 0.00 |
-| Verdict | **RELEASABLE** — gates green, RRS ≥ 90, two consecutive full-diversity clean panels |
+| Multi-model review panels | 14 (3 models each: opus, sonnet, haiku) |
+| Confirmed findings (panels) | 22 — 0 CRITICAL, 1 HIGH, 6 MEDIUM, 10 LOW, 5 NIT |
+| Severity-weighted yield | 15 → 8 → 5.2 → 1 → 6.4 → 5 → 1 → 0 → 1 → 1 → 1.2 → 0.2 → 0 → 0 |
+| Tests | 280 passing / 1 skipped with py7zr+rarfile present; ruff + mypy clean; ~92% coverage. **CI green** (py7zr 1.1.0/1.1.3 matrix) |
+| Release-Readiness Score | 96.0 / 100 |
+| Convergence | three consecutive full-diversity clean panels on the shipping tree (12 NIT-only → 13 clean → 14 clean); confidence 1.00 |
+| Verdict | **RELEASABLE** — gates green, CI green, RRS ≥ 90, Panels 12–14 clean on the exact shipping tree |
+
+> **Converged and RELEASABLE on the shipping tree.** Panel 12 (NIT-only) flagged
+> one cosmetic trailing-dot quirk in `_split_ext`; that NIT was fixed (commit
+> `cee47c7`) and **Panel 13** confirmed the fix full-diversity clean (opus +
+> sonnet 0 findings; one haiku "HIGH" dismissed as a misread whose own proposed
+> fix was a lossy regression). **Panel 14** then re-confirmed the tree
+> unanimously clean — all three models 0 findings, the prior false HIGH explicitly
+> refuted. The earlier "RELEASABLE" after Panel 8 was on the pre-consolidation
+> tree; it then took a consolidation, a CI fix, a four-panel fight with one ported
+> feature, and two confirmation panels to honestly re-earn it — see the sections
+> below.
 
 > **Converged.** Panels 7 and 8 are two consecutive full-diversity panels with
 > nothing above LOW (Panel 8 found nothing at all from any model), so the
@@ -48,7 +59,14 @@ Severity weights: CRITICAL=40, HIGH=10, MEDIUM=4, LOW=1, NIT=0.2.
 | 6 | 1 MEDIUM, 1 LOW | 5.0 | 7z `..`-prefixed basename loss (Panel-5 fix regression); overwrite=False collision bucket |
 | — | _root-cause refactor_ | — | 7z read → in-memory BytesIOFactory keyed by member name (commit `d3cd07a`) |
 | 7 | 1 LOW | 1.0 | Recursive-7z cap-before-filter (documented); duplicate-name read HIGH dismissed — refactor held |
-| 8 | _none_ | 0.0 | Clean at full diversity (broad sweep off the 7z seam) — release gate satisfied |
+| 8 | _none_ | 0.0 | Clean at full diversity (broad sweep off the 7z seam) — release gate satisfied (pre-consolidation) |
+| 9 | 1 LOW | 1.0 | Confirmation post-consolidation+CI-fix: 7z extension-detected decoy leaf escaped the filter (fixed); CI red→green |
+| 10 | 1 LOW | 1.0 | flat_used reservation leak in the decoy fix (consensus opus+sonnet; fixed) |
+| 11 | 1 LOW, 1 NIT | 1.2 | 4th issue in the extension feature (cap-before-filter for archive-named) → feature REVERTED to peek/content-sniff |
+| 12 | 1 NIT | 0.2 | Full-diversity clean on the reverted (shipping) tree; cosmetic trailing-dot NIT |
+| — | _NIT fix_ | — | `_split_ext` splits on the trailing-dot-stripped name (commit `cee47c7`) — `"file." → "file. (1)"` |
+| 13 | _none_ | 0.0 | Confirmation of the NIT fix: opus + sonnet clean; haiku HIGH dismissed (lossy proposed fix) — RELEASABLE |
+| 14 | _none_ | 0.0 | Convergence re-confirmation: all three models clean; prior false HIGH refuted; collision-candidate stress passed — RELEASABLE |
 
 ## What each panel found and how it was fixed
 
@@ -230,16 +248,93 @@ BytesIOFactory refactor (this branch) was kept over hhhw8t's temp-dir approach.
 > as re-converged. Gates remain green and tests pass, but the panel signal needs
 > to be refreshed on the merged code.
 
-## Release decision (v0.1.0)
+## CI was red for ~7 commits (caught a real cross-version 7z defect)
+
+The branch CI had been **failing since Panel 3** — the `optional-backends` job's
+**py7zr 0.20.8** matrix leg, on the 7z symlink test. py7zr 0.20.8 (and 1.0.x)
+expose *no* symlink information on `FileInfo`; `FileInfo.is_symlink` only landed
+in **1.1.0**, so 7z symlink skipping (a real safety feature) couldn't work on
+the older pin. Local runs used py7zr 1.1.3 and were blind to it — and
+`readiness.py`'s gates run *local* pytest only, so the "RELEASABLE" verdict had
+been computed without ever exercising the version matrix. This is the
+documented "CI is non-negotiable; it sees what local runs cannot" lesson biting
+in practice. Fixed by bounding the dependency `py7zr>=1.1,<2`, matrixing CI over
+`[1.1.0, 1.1.3]`, and dropping the now-dead py7zr 0.x read fallback. CI is green
+(commit `11c2a76`).
+
+## Panel 9 — confirmation on the merged + CI-fixed tree (commit `0ebc8f9`)
+
+Full-diversity confirmation panel. **haiku and sonnet found zero defects.** opus
+found **1 LOW** — a regression from the consolidation's extension-based 7z
+nesting: a non-archive named like an archive (a text file `decoy.zip`) inside a
+7z is *presumed* a container by `looks_like_archive()`, so it bypasses the leaf
+filter, is written to be opened, fails to open as an archive, and was then
+extracted as a leaf — escaping `include`/`exclude`. The content-sniffing ZIP/tar
+backends filter it correctly. Fixed by re-applying the leaf filter when an
+extension-classified container fails to open (and unwinding the file/byte budget
+of the file written only for the open-attempt). Real nested 7z archives still
+always traverse; the no-filter path is unchanged.
+
+> **Open item before final ship:** the Panel-9 decoy fix (`0ebc8f9`) changed
+> code *after* the panel reviewed it, so `readiness.py`'s RELEASABLE (streak 3,
+> RRS 94.5) is not yet honest for the current HEAD. A **Panel 10** confirmation
+> on the post-fix tree is needed to re-establish the clean streak on the exact
+> code being shipped. (Two of three Panel-9 models were already clean and the
+> fix is small/tested, so residual risk is low — but the methodology's whole
+> point is to *measure* that, not assume it.)
+
+## Panels 10–14 — the extension feature, fought and reverted
+
+Panel 9's decoy fix introduced a sibling bug Panel 10 caught (the `flat_used`
+leak, consensus opus+sonnet, fixed). Panel 11 then found a *fourth* issue in the
+same ported feature (the extension-based 7z nested-archive detection): an
+archive-named, oversized, filtered-out member tripped `max_member_bytes` before
+the filter (opus LOW), plus an empty-dir NIT (sonnet). Three straight panels with
+a defect in one feature is a design signal, not bad luck — so per a pre-agreed
+guardrail the feature was **reverted** to the pre-consolidation content-sniff
+(peek) recursion, eliminating all four extension defects at once and restoring
+*more* correct behaviour (a real archive under a non-archive name is recursed
+again). **Panel 12** then confirmed the reverted tree full-diversity clean
+(0 above-NIT; one cosmetic trailing-dot NIT).
+
+That NIT was fixed (commit `cee47c7`): `_split_ext` now finds the extension split
+on the trailing-dot-stripped name, so `"file."` carries no extension and a
+flat-mode collision lands as `"file. (1)"` rather than `"file (1)."`. **Panel 13**
+confirmed the fix full-diversity clean. opus and sonnet found ZERO; each
+independently reproduced the multi-dot case (`"a.b.c."` → stem `"a.b"`, ext
+`".c."`, collision `"a.b (1).c."`) and verified it is **lossless**
+(`stem + ext == basename`) — sonnet even built an archive holding both `"a.b.c."`
+and `"a.b (1).c."` and watched all three payloads land distinctly. haiku filed a
+lone **HIGH** reading the docstring's "matching `detect._extension`" as a promise
+of byte-identical extensions; it was **dismissed** because the real contract is
+losslessness of the rename (which holds), and haiku's own proposed fix — splitting
+the extension off the *stripped* name — **drops the trailing dot** (`"a.b (1).c"`,
+`stem + ext != basename`), a lossy regression proven by direct repro. The
+misleading comment that triggered the false positive was clarified and a multi-dot
+regression test added (`test_flatten_collision_multidot_trailing_dot_name`) —
+comment + test only, no behaviour change. **Panel 14** then re-confirmed the tree
+**unanimously clean** (all three models 0 findings): each verified the reworded
+comment is accurate and the new test pins the true lossless behaviour, and the
+prior false HIGH was explicitly refuted. The sharpest stress yet — an archive
+whose members include a *literal* collision-candidate name (`a.b.c.` ×2 plus a
+real `a.b (1).c.`) — confirmed the generated suffix bumps past it
+(`a.b (1) (1).c.` / `a.b (2).c.`) with no data loss. Panels 12, 13, and 14 are
+three consecutive full-diversity clean panels on the exact shipping tree.
+
+## Release decision (v1.0.0) — RELEASABLE
 
 `python scripts/readiness.py` → **RELEASABLE**: all hard gates green (tests /
-ruff / mypy / no open defects), **RRS 94.3 / 100**, **clean streak 2 of 2** at
-full diversity (confidence 0.86).
+ruff / mypy / no open defects), **CI green** (py7zr 1.1.0/1.1.3 matrix),
+**RRS 96.0 / 100**, **clean streak ≥ 2 at full diversity** (confidence 1.00).
+Panels 12 (NIT-only), 13 (clean, confirming the NIT fix), and 14 (unanimously
+clean) are three consecutive full-diversity clean panels on the **exact shipping
+tree**; the reverted recursion is the Panels 1–8 code and every other component
+was reviewed clean across Panels 9–14.
 
 **What the convergence signal covers:** the full ZIP, tar, and gzip/bz2/xz
 single-file surfaces, and the **7z** backend (py7zr installed and exercised for
-real across eight panels — it was the richest source of defects and is now the
-most heavily tested).
+real across twelve panels — the richest source of defects and now the most
+heavily tested).
 
 **What it does *not* cover (rests on CI + code review instead):** the **rar
 content path**. This environment has no `rar`/`unrar` binary, so `.rar` fixtures
@@ -247,6 +342,12 @@ can't be created and rar read/extract can't be exercised end-to-end. The rar
 *code* was read every panel; one directory-member `open_stream` asymmetry is
 noted as known-unverified, to confirm and (if real) fix when a rar binary is
 available. Ship-blocking only for callers who rely on the optional rar backend.
+
+**The one cosmetic NIT is now fixed:** the Panel-12 trailing-dot quirk (a
+`file.` member yielding a `file (1).` collision suffix in flat mode) was resolved
+in commit `cee47c7` — `_split_ext` splits on the trailing-dot-stripped name, so
+collisions land as `file. (1)` and every rename stays lossless
+(`stem + ext == basename`), confirmed clean by Panel 13.
 
 ## Standing themes
 
@@ -271,6 +372,17 @@ available. Ship-blocking only for callers who rely on the optional rar backend.
   reconstruction (the py7zr ≥ 1.0 workaround). When instances keep coming from
   the same seam, weigh replacing the mechanism (e.g. an in-memory read keyed by
   py7zr's own member name) against patching each instance.
+- **Know when to revert, not patch.** The extension-based 7z detection (ported
+  from another branch) produced a fresh LOW in Panels 9, 10, and 11 — each a new
+  edge case of "guess by name, then write/open/maybe-unwind." A pre-agreed
+  guardrail ("if it recurs once more, revert") meant the 12th panel confirmed a
+  *simpler, content-correct* recursion instead of a fourth patch. Set the
+  ship-vs-continue (and patch-vs-revert) rule **before** you're emotionally
+  invested in the fix.
+- **CI gates ≠ local gates.** `readiness.py` runs *local* pytest; it was blind
+  to the py7zr version matrix and reported RELEASABLE while CI was red for seven
+  commits (py7zr < 1.1 lacks `FileInfo.is_symlink`). A release decision must
+  state CI status explicitly, not infer it from a green local run.
 
 _Maintenance: append a row to the trajectory table and a bullet per new panel;
 keep the TL;DR numbers in sync with `release_readiness.json`._

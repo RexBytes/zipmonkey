@@ -92,38 +92,6 @@ _ARCHIVE_TYPES = frozenset(
     {"zip", "tar", "gzip", "bzip2", "xz", "7z", "rar"}
 )
 
-# Filename extensions that indicate an unpackable archive. Used to detect nested
-# archives WITHOUT reading content, for backends whose peek would materialise
-# the whole member (7z). Office/Java zip containers (.xlsx/.jar) are absent on
-# purpose, so they stay leaves.
-_ARCHIVE_EXTS = (
-    ".zip",
-    ".tar",
-    ".tgz",
-    ".tbz2",
-    ".tbz",
-    ".txz",
-    ".gz",
-    ".bz2",
-    ".bz",
-    ".xz",
-    ".lzma",
-    ".7z",
-    ".rar",
-)
-
-
-def looks_like_archive(filename: str) -> bool:
-    """Return True if ``filename`` has an unpackable-archive extension.
-
-    A content-free heuristic for nested-archive detection on backends that
-    cannot peek cheaply. ``.xlsx``/``.docx``/``.jar`` etc. are deliberately
-    excluded so document/Java zip containers are treated as leaves.
-    """
-    # rstrip(".") to match _extension's trailing-dot handling.
-    base = filename.replace("\\", "/").rsplit("/", 1)[-1].rstrip(".").lower()
-    return base.endswith(_ARCHIVE_EXTS)
-
 
 def _extension(filename: str | None) -> str:
     """Return the lowercased final extension of ``filename`` (incl. dot).
